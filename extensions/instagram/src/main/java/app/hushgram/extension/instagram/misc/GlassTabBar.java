@@ -2931,6 +2931,19 @@ public final class GlassTabBar {
                     capsule.set(nowLeft, within.top + inset, nowRight, within.bottom - inset);
                 }
                 tick((nowLeft + nowRight) / 2f);
+                if (bubble && elapsed < SPRING_MS) {
+                    // The bubble stretches along its way and gives up a little height, as a drop of liquid does
+                    // when it's pulled: the faster the spring is moving it, the more. At rest it's as it was.
+                    float travel = (toLeft + toRight - fromLeft - fromRight) / 2f;
+                    float wider = stretchDp(travel * springVelocity(elapsed) / density);
+                    if (wider * density > 0.5f) {
+                        float squash = capsule.height() * (1f - squashKept(wider)) / 2f;
+                        capsule.inset(-wider * density / 2f, squash);
+                        capsule.left = Math.max(capsule.left, within.left);
+                        capsule.right = Math.min(capsule.right, within.right);
+                        corner = Math.min(corner, capsule.height() / 2f);
+                    }
+                }
                 int color = highlight(base);
                 if (share < 1f) color = (color & 0x00ffffff) | (scaledAlpha(Color.alpha(color), Math.max(0f, share)) << 24);
                 fill.setColor(color);
@@ -3459,6 +3472,35 @@ public final class GlassTabBar {
         float swell = 1f + BUBBLE_SWELL * (float) Math.sin(Math.PI * t);
         float carried = 1f + Math.max(0f, from - 1f) * (1f - t);
         return Math.max(swell, carried);
+    }
+
+    /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.035f;
+    /** The most the bubble stretches, in dp of width, however fast it goes. */
+    static final float BUBBLE_STRETCH_MAX_DP = 30f;
+    /** The share of its height the bubble gives up at the full stretch. */
+    static final float BUBBLE_SQUASH_MAX = 0.12f;
+
+    /**
+     * How fast the bubble's spring is moving [elapsed] ms into it, in progress a second: the slope of
+     * {@link #springProgress}, worked out from the same sum. 0 as it starts and once it has rested.
+     */
+    static float springVelocity(long elapsed) {
+        if (elapsed >= SPRING_MS || elapsed <= 0) return 0f;
+        double t = elapsed / 1000d;
+        double fade = SPRING_DAMPING * SPRING_SPEED;
+        double swing = SPRING_SPEED * Math.sqrt(1d - SPRING_DAMPING * SPRING_DAMPING);
+        return (float) (Math.exp(-fade * t) * Math.sin(swing * t) * (fade * fade + swing * swing) / swing);
+    }
+
+    /** How many dp wider the bubble is while it travels [speedDpPerSecond] dp a second, either way. */
+    static float stretchDp(float speedDpPerSecond) {
+        return Math.min(BUBBLE_STRETCH_MAX_DP, BUBBLE_STRETCH_DP_PER_DPS * Math.abs(speedDpPerSecond));
+    }
+
+    /** The share of its height the bubble keeps while it is [stretchDp] dp wider than it is at rest. */
+    static float squashKept(float stretchDp) {
+        return 1f - BUBBLE_SQUASH_MAX * Math.min(1f, stretchDp / BUBBLE_STRETCH_MAX_DP);
     }
 
     /**

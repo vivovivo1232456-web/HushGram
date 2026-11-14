@@ -2279,6 +2279,23 @@ public class GlassTabBarTest {
         assertEquals("no step when it rests", 1f, GlassTabBar.springProgress(GlassTabBar.SPRING_MS - 1), 0.004f);
     }
 
+    /** The liquid bubble stretches with the spring's speed: none at the start and the end, most mid-flight, never past its cap. */
+    @Test
+    public void theBubbleStretchesWithTheSpringsSpeed() {
+        assertEquals(0f, GlassTabBar.springVelocity(0), 0f);
+        assertEquals(0f, GlassTabBar.springVelocity(GlassTabBar.SPRING_MS), 0f);
+        assertEquals(0f, GlassTabBar.springVelocity(GlassTabBar.SPRING_MS * 3), 0f);
+        assertTrue("moving early on", GlassTabBar.springVelocity(70) > 5f);
+        float slope = (GlassTabBar.springProgress(101) - GlassTabBar.springProgress(99)) / 0.002f;
+        assertEquals("the speed is the progress's slope", slope, GlassTabBar.springVelocity(100), 0.2f);
+        assertEquals(0f, GlassTabBar.stretchDp(0f), 0f);
+        assertEquals("either way", GlassTabBar.stretchDp(-300f), GlassTabBar.stretchDp(300f), 0f);
+        assertEquals("capped", GlassTabBar.BUBBLE_STRETCH_MAX_DP, GlassTabBar.stretchDp(100000f), 0f);
+        assertEquals("full height at rest", 1f, GlassTabBar.squashKept(0f), 0f);
+        assertEquals("gives up a little at the cap", 1f - GlassTabBar.BUBBLE_SQUASH_MAX,
+                GlassTabBar.squashKept(GlassTabBar.BUBBLE_STRETCH_MAX_DP * 2f), 0.0001f);
+    }
+
     /**
      * #289: partway through its spring the liquid bubble has gone past the first tab, but it squashes against
      * the pill's end instead of leaving it. The flat capsule has landed on the tab by then and doesn't go past.
