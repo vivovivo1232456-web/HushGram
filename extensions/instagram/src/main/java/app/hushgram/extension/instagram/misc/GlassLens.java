@@ -33,19 +33,59 @@ public final class GlassLens {
             + "uniform shader content;\n"
             + "uniform float4 box;\n"
             + "uniform float radius;\n"
-            + "uniform float centre;\n"
-            + "uniform float rim;\n"
+            + "uniform float reach;\n"
+            + "uniform float energy;\n"
+            + "uniform float dp;\n"
+            + "uniform float dark;\n"
+            + "uniform float3 bg;\n"
+            + "half3 vivid(half3 c, float s) {\n"
+            + "  float l = dot(c, half3(0.2126, 0.7152, 0.0722));\n"
+            + "  return clamp(half3(l) + (c - half3(l)) * s, 0.0, 1.0);\n"
+            + "}\n"
             + "half4 main(float2 p) {\n"
             + "  float2 mid = (box.xy + box.zw) * 0.5;\n"
             + "  float2 hs = (box.zw - box.xy) * 0.5;\n"
-            + "  float2 q = abs(p - mid) - (hs - float2(radius));\n"
+            + "  float2 r = p - mid;\n"
+            + "  float2 q = abs(r) - (hs - float2(radius));\n"
             + "  float d = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - radius;\n"
             + "  float inside = clamp(0.5 - d, 0.0, 1.0);\n"
             + "  if (inside <= 0.0) return half4(0.0);\n"
-            + "  float depth = clamp(-d / max(1.0, min(hs.x, hs.y)), 0.0, 1.0);\n"
-            + "  float bend = (1.0 - depth) * (1.0 - depth);\n"
-            + "  float2 source = mid + (p - mid) * (1.0 - centre - rim * bend);\n"
-            + "  return content.eval(source) * inside;\n"
+            + "  float2 sg = float2(r.x < 0.0 ? -1.0 : 1.0, r.y < 0.0 ? -1.0 : 1.0);\n"
+            + "  float2 n = (q.x > 0.0 && q.y > 0.0) ? normalize(q) * sg\n"
+            + "      : (q.x > q.y ? float2(sg.x, 0.0) : float2(0.0, sg.y));\n"
+            // The glass's edge is a rounded bevel: its height, a squircle, rises from the edge over the bezel, and
+            // light going down through it bends by Snell's law (air to glass, 1.5), more the steeper the surface.
+            + "  float bezel = max(1.0, 0.5 * min(hs.x, hs.y));\n"
+            + "  float t = clamp(-d / bezel, 0.0, 1.0);\n"
+            + "  float u = 1.0 - t;\n"
+            + "  float u3 = u * u * u;\n"
+            + "  float body = max(1.0 - u3 * u, 0.0001);\n"
+            + "  float slope = min(u3 * pow(body, -0.75), 8.0);\n"
+            + "  float sinI = slope * inversesqrt(1.0 + slope * slope);\n"
+            + "  float sinR = sinI / 1.5;\n"
+            + "  float tanR = sinR * inversesqrt(max(1.0 - sinR * sinR, 0.0001));\n"
+            + "  float f = pow(max(min(slope - tanR, 3.0), 0.0) / 3.0, 0.6);\n"
+            // Which way it bends: in, towards the middle, so the edge shows what lies further in, drawn out.
+            + "  float shift = reach * (1.0 + 0.35 * energy) * 0.7 * bezel * f;\n"
+            + "  float split = 0.6 + 0.4 * energy;\n"
+            + "  half4 sr = content.eval(p - n * (shift * (1.0 + 0.5 * split)));\n"
+            + "  half4 sgr = content.eval(p - n * shift);\n"
+            + "  half4 sb = content.eval(p - n * (shift * (1.0 - 0.5 * split)));\n"
+            + "  half3 back = half3(bg);\n"
+            + "  half3 col = half3(sr.r + back.r * (1.0 - sr.a), sgr.g + back.g * (1.0 - sgr.a), sb.b + back.b * (1.0 - sb.a));\n"
+            + "  col = vivid(col, 1.25) * 0.96 + 0.04;\n"
+            // Light: the edge lifts as glass does at a glancing angle, and a thin bright line runs round it, most where
+            // it faces the light at the top left and a little where it faces away.
+            + "  float edge = pow(1.0 - t, 3.0);\n"
+            + "  col += half3(edge * mix(0.14, 0.10, dark));\n"
+            + "  float facing = dot(n, float2(-0.55, -0.83));\n"
+            + "  float ring = pow(clamp(1.0 + d / (2.4 * dp), 0.0, 1.0), 1.6);\n"
+            + "  float spec = pow(clamp(facing, 0.0, 1.0), 1.3) * 0.95 + pow(clamp(-facing, 0.0, 1.0), 1.3) * 0.45;\n"
+            + "  float broad = pow(clamp(1.0 + d / (bezel * 0.5), 0.0, 1.0), 2.0);\n"
+            + "  col += half3(ring * spec * 0.85 + broad * pow(clamp(facing, 0.0, 1.0), 2.0) * 0.10);\n"
+            + "  col *= half(1.0 - 0.12 * broad * clamp(-facing, 0.0, 1.0));\n"
+            + "  col = clamp(col, 0.0, 1.0);\n"
+            + "  return half4(col * inside, inside);\n"
             + "}\n";
 
     /**
@@ -175,6 +215,18 @@ public final class GlassLens {
     private boolean edge;
     private float edgeAmount;
     private float edgeEnergy;
+    private float lookDp = 3f;
+    private float lookDark = 1f;
+    private float lookRed = 0.1f, lookGreen = 0.1f, lookBlue = 0.1f;
+
+    /** What the glass lens shows itself on: the screen's [dp], whether it is [dark], and the [base] colour behind it. */
+    void look(float dp, boolean dark, int base) {
+        lookDp = Math.max(1f, dp);
+        lookDark = dark ? 1f : 0f;
+        lookRed = ((base >> 16) & 0xff) / 255f;
+        lookGreen = ((base >> 8) & 0xff) / 255f;
+        lookBlue = (base & 0xff) / 255f;
+    }
 
     /** How much the lens is moving, from 0 at rest to 1 at speed, which the edge lens bends and smears by. */
     void energy(float moving) {
@@ -231,9 +283,11 @@ public final class GlassLens {
             } else if (rim) {
                 lens.setFloatUniform("band", bandShare(percent()) * across / 2f);
             } else {
-                float bend = scale(percent());
-                lens.setFloatUniform("centre", CENTRE_MAGNIFY * bend);
-                lens.setFloatUniform("rim", RIM_BEND * bend);
+                lens.setFloatUniform("reach", scale(percent()));
+                lens.setFloatUniform("energy", edgeEnergy);
+                lens.setFloatUniform("dp", lookDp);
+                lens.setFloatUniform("dark", lookDark);
+                lens.setFloatUniform("bg", lookRed, lookGreen, lookBlue);
             }
             layer.setPosition(0, 0, width, height);
             layer.setRenderEffect(RenderEffect.createRuntimeShaderEffect(lens, "content"));

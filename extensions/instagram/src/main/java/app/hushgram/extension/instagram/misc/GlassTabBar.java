@@ -26,7 +26,6 @@ import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.Shader;
-import android.graphics.SweepGradient;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -2706,6 +2705,13 @@ public final class GlassTabBar {
             /** Where the last recording took the glass's backdrop from ({@link #backdropSource}). */
             private final Matrix source = new Matrix();
             @Nullable private RenderNode node;
+            /**
+             * What was recorded under the bar, with no blur on it, drawn into [node] to be blurred and into
+             * [clearNode] to be seen almost as it is, through the lens.
+             */
+            @Nullable private RenderNode contentNode;
+            @Nullable private RenderNode clearNode;
+            private boolean clearBroken;
             private boolean recorded;
             private float nodeLeft, nodeTop;
             private int nodeWidth = -1;
@@ -2736,10 +2742,9 @@ public final class GlassTabBar {
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
             private float layerCorner, layerAlpha, layerEnergy;
-            /** The enchantment over the lens: a rainbow that turns round its edge, a glint that sweeps across it, sparkles. */
+            /** The lens's shadow and the shine that slides across it. */
             private final Paint enchantPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Matrix enchantMatrix = new Matrix();
-            @Nullable private SweepGradient enchantSweep;
             @Nullable private LinearGradient enchantGlint;
             private boolean enchantBroken;
             private int layerColor;
@@ -3082,9 +3087,15 @@ public final class GlassTabBar {
                     made = new GlassLens();
                     lens = made;
                 }
-                if (made.paint(canvas, node, nodeLeft, nodeTop, DOWNSAMPLE, bar.getWidth(), bar.getHeight(), capsule, corner)) {
-                    fill.setColor(tint(base, true, opacityScale()));
-                    canvas.drawRoundRect(capsule, corner, corner, fill);
+                RenderNode clear = clearNode;
+                made.energy(layerOn ? layerEnergy : 0f);
+                made.look(density, isDark(base), base);
+                if (made.paint(canvas, clear != null ? clear : node, nodeLeft, nodeTop, DOWNSAMPLE, bar.getWidth(), bar.getHeight(), capsule, corner)) {
+                    // Clear glass takes no tint of the pill's: it shows what is behind it.
+                    if (clear == null) {
+                        fill.setColor(tint(base, true, opacityScale()));
+                        canvas.drawRoundRect(capsule, corner, corner, fill);
+                    }
                     return true;
                 }
                 return false;
@@ -3118,6 +3129,14 @@ public final class GlassTabBar {
                         faded = canvas.saveLayerAlpha(layerBounds, Math.round(255f * layerAlpha));
                     }
                     float corner = layerCorner;
+                    if (!enchantBroken) {
+                        try {
+                            paintShadow(canvas, corner);
+                        } catch (Throwable failure) {
+                            enchantBroken = true;
+                            diagnose("lens shadow failed", failure);
+                        }
+                    }
                     if (!paintLens(canvas, corner)) {
                         fill.setColor(base | 0xff000000);
                         canvas.drawRoundRect(capsule, corner, corner, fill);
@@ -3126,7 +3145,7 @@ public final class GlassTabBar {
                     fill.setColor((layerColor & 0x00ffffff) | (scaledAlpha(Color.alpha(layerColor), LENS_FILL_SHARE) << 24));
                     canvas.drawRoundRect(capsule, corner, corner, fill);
                     if (!bendTabs(canvas, corner)) magnifyTabs(canvas, corner);
-                    paintBubble(canvas, corner, 1f);
+                    paintBubble(canvas, corner, 0.5f);
                     if (!enchantBroken) {
                         try {
                             paintEnchant(canvas, corner);
@@ -3146,69 +3165,47 @@ public final class GlassTabBar {
             }
 
             /**
-             * What makes the lens pretty: a soft glow in the colours of a rainbow that turns round it, a thin
-             * rainbow rim, a glint that sweeps across the glass as it moves, and a few sparkles that twinkle on
-             * it. All of it grows with how much the lens is moving and is gone with it.
+             * The soft shadow the lens casts on the bar round it, a little more below it, as a piece of glass lifted off
+             * the surface does.
              */
-            private void paintEnchant(@NonNull Canvas canvas, float corner) {
-                float energy = layerEnergy;
-                long now = SystemClock.uptimeMillis();
-                float turn = (now % 4000L) / 4000f;
-                if (enchantSweep == null || enchantGlint == null) {
-                    enchantSweep = new SweepGradient(0f, 0f, new int[] {
-                            0xffff7ad9, 0xffb57bff, 0xff6fa8ff, 0xff6ff0e0, 0xffa6ff9e, 0xffffe27a, 0xffff7ad9}, null);
-                    enchantGlint = new LinearGradient(0f, 0f, density * 120f, 0f,
-                            new int[] {0x00ffffff, 0x70ffd9f6, 0x70d9f4ff, 0x00ffffff},
-                            new float[] {0f, 0.42f, 0.58f, 1f}, Shader.TileMode.REPEAT);
-                }
-                float middleX = capsule.centerX();
-                float middleY = capsule.centerY();
-                float presence = 0.35f + 0.65f * energy;
-                // The glow, and the rim, in the rainbow turning round the lens.
-                enchantMatrix.setRotate(turn * 360f);
-                enchantMatrix.postTranslate(middleX, middleY);
-                enchantSweep.setLocalMatrix(enchantMatrix);
-                enchantPaint.setShader(enchantSweep);
+            private void paintShadow(@NonNull Canvas canvas, float corner) {
+                enchantPaint.setShader(null);
                 enchantPaint.setStyle(Paint.Style.STROKE);
-                for (int ring = 3; ring >= 0; ring--) {
-                    float reach = density * (1f + ring * 2.4f);
+                enchantPaint.setColor(0xff000000);
+                enchantPaint.setStrokeWidth(density * 2.2f);
+                for (int ring = 0; ring < 6; ring++) {
+                    float reach = density * (1.2f + ring * 1.9f);
+                    float fade = 1f - ring / 6f;
                     layerBounds.set(capsule);
                     layerBounds.inset(-reach, -reach);
-                    enchantPaint.setStrokeWidth(density * 2.6f);
-                    enchantPaint.setAlpha(Math.round(255f * (0.20f - 0.045f * ring) * presence));
+                    layerBounds.offset(0f, density * 1.6f);
+                    enchantPaint.setAlpha(Math.round(255f * 0.085f * fade * fade));
                     canvas.drawRoundRect(layerBounds, corner + reach, corner + reach, enchantPaint);
                 }
-                enchantPaint.setStrokeWidth(density * 1.3f);
-                enchantPaint.setAlpha(Math.round(255f * (0.30f + 0.55f * energy)));
-                canvas.drawRoundRect(capsule, corner, corner, enchantPaint);
-                // The glint, and the sparkles, only on the glass.
+            }
+
+            /**
+             * A broad soft band of light across the glass, which slides over it as the lens slides over the bar, as the
+             * shine on glass does when it moves under a light. It grows with how much the lens is moving.
+             */
+            private void paintEnchant(@NonNull Canvas canvas, float corner) {
+                if (enchantGlint == null) {
+                    enchantGlint = new LinearGradient(0f, 0f, density * 150f, 0f,
+                            new int[] {0x00ffffff, 0x30ffffff, 0x5cffffff, 0x30ffffff, 0x00ffffff},
+                            new float[] {0f, 0.32f, 0.5f, 0.68f, 1f}, Shader.TileMode.REPEAT);
+                }
                 layerPath.rewind();
                 layerPath.addRoundRect(capsule, corner, corner, Path.Direction.CW);
                 int saved = canvas.save();
                 canvas.clipPath(layerPath);
-                enchantMatrix.setRotate(-18f);
-                enchantMatrix.postTranslate(middleX * 0.8f + turn * density * 240f, capsule.top);
+                enchantMatrix.setRotate(-24f);
+                enchantMatrix.postTranslate(capsule.centerX() * 1.35f, capsule.top);
                 enchantGlint.setLocalMatrix(enchantMatrix);
-                enchantPaint.setShader(enchantGlint);
                 enchantPaint.setStyle(Paint.Style.FILL);
-                enchantPaint.setAlpha(Math.round(255f * (0.25f + 0.75f * energy)));
+                enchantPaint.setShader(enchantGlint);
+                enchantPaint.setAlpha(Math.round(255f * (0.35f + 0.65f * layerEnergy)));
                 canvas.drawRect(capsule, enchantPaint);
                 enchantPaint.setShader(null);
-                enchantPaint.setStyle(Paint.Style.STROKE);
-                enchantPaint.setStrokeCap(Paint.Cap.ROUND);
-                enchantPaint.setStrokeWidth(density * 1.1f);
-                for (int i = 0; i < 7; i++) {
-                    float seed = i * 1.618f;
-                    float x = capsule.left + capsule.width() * (0.12f + 0.76f * ((seed * 0.37f) % 1f));
-                    float y = capsule.top + capsule.height() * (0.18f + 0.64f * ((seed * 0.73f + 0.3f) % 1f));
-                    float twinkle = 0.5f + 0.5f * (float) Math.sin(now / 240d + seed * 2.1d);
-                    float size = density * (1.4f + 2.6f * twinkle);
-                    enchantPaint.setColor(0xffffffff);
-                    enchantPaint.setAlpha(Math.round(255f * twinkle * twinkle * (0.2f + 0.8f * energy)));
-                    canvas.drawLine(x - size, y, x + size, y, enchantPaint);
-                    canvas.drawLine(x, y - size, x, y + size, enchantPaint);
-                }
-                enchantPaint.setStrokeCap(Paint.Cap.BUTT);
                 canvas.restoreToCount(saved);
             }
 
@@ -3434,6 +3431,14 @@ public final class GlassTabBar {
                 node = null;
                 recorded = false;
                 if (backdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) backdrop.discardDisplayList();
+                RenderNode content = contentNode;
+                RenderNode clear = clearNode;
+                contentNode = null;
+                clearNode = null;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    if (content != null) content.discardDisplayList();
+                    if (clear != null) clear.discardDisplayList();
+                }
                 if (lens != null) lens.discard();
                 if (rimLens != null) rimLens.discard();
                 if (circleRim != null) circleRim.discard();
@@ -3557,6 +3562,37 @@ public final class GlassTabBar {
             }
 
             /**
+             * The same backdrop with hardly any blur, for the lens: clear glass shows what is behind it, bent at its
+             * edge, and not a frosted copy of it. If this fails the lens uses the blurred backdrop.
+             */
+            private void recordClear(RenderNode content, int width, int height) {
+                if (clearBroken) return;
+                try {
+                    RenderNode clear = clearNode;
+                    if (clear == null) {
+                        clear = new RenderNode("hushgram-glass-clear");
+                        ColorMatrix vivid = new ColorMatrix();
+                        vivid.setSaturation(1.2f);
+                        clear.setRenderEffect(RenderEffect.createChainEffect(
+                                RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(vivid)),
+                                RenderEffect.createBlurEffect(0.8f, 0.8f, Shader.TileMode.CLAMP)));
+                        clearNode = clear;
+                    }
+                    clear.setPosition(0, 0, width, height);
+                    Canvas drawing = clear.beginRecording(width, height);
+                    try {
+                        drawing.drawRenderNode(content);
+                    } finally {
+                        clear.endRecording();
+                    }
+                } catch (Throwable failure) {
+                    clearBroken = true;
+                    clearNode = null;
+                    diagnose("clear backdrop failed", failure);
+                }
+            }
+
+            /**
              * Records what's under the bar into this drawable's own render node, to be blurred into the pill.
              *
              * <p>The screen isn't copied: the views drawn under the bar (in 450 the tab pager, beside an empty
@@ -3631,7 +3667,13 @@ public final class GlassTabBar {
 
                     float x0 = bar.getLeft() + area.left - pad;
                     float top = backdropSource(source, floating, scale, x0, bar.getTop(), bar.getY() + area.top, pad, tall);
-                    Canvas recording = backdrop.beginRecording(width, height);
+                    RenderNode content = contentNode;
+                    if (content == null) {
+                        content = new RenderNode("hushgram-glass-source");
+                        contentNode = content;
+                    }
+                    content.setPosition(0, 0, width, height);
+                    Canvas recording = content.beginRecording(width, height);
                     boolean found;
                     Throwable leftOutDraw;
                     try {
@@ -3654,8 +3696,15 @@ public final class GlassTabBar {
                         leftOutDraw = drawUnderBar(recording, base, parent, barIndex, top, tall, leftOut, skipped,
                                 frames::frameOf, reelFrames);
                     } finally {
+                        content.endRecording();
+                    }
+                    Canvas blurring = backdrop.beginRecording(width, height);
+                    try {
+                        blurring.drawRenderNode(content);
+                    } finally {
                         backdrop.endRecording();
                     }
+                    recordClear(content, width, height);
                     recorded = true;
                     tries.worked();
                     if (leftOutDraw != null) HookStatus.threw(FamilyNames.GLASS_TAB_BAR, "blur view", leftOutDraw);
@@ -3766,7 +3815,7 @@ public final class GlassTabBar {
     static final float BUBBLE_HELD_SWELL = 0.20f;
     /** How much the lens magnifies the tabs under it when the shader can't (none), and how much of the highlight's colour it keeps. */
     static final float LENS_MAGNIFY = 1f;
-    static final float LENS_FILL_SHARE = 0.45f;
+    static final float LENS_FILL_SHARE = 0.2f;
     /** How far in at the lens's very edge the tabs are drawn in, as a multiple of where they would sit. */
     static final float LENS_EDGE_PULL = 0.8f;
     /** The stretch, in dp, at which the lens counts as fully lifted off the tab's capsule. */
