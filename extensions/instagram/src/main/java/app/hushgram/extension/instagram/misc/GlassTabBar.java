@@ -26,6 +26,7 @@ import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.Shader;
+import android.graphics.SweepGradient;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -2735,6 +2736,12 @@ public final class GlassTabBar {
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
             private float layerCorner, layerAlpha, layerEnergy;
+            /** The enchantment over the lens: a rainbow that turns round its edge, a glint that sweeps across it, sparkles. */
+            private final Paint enchantPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Matrix enchantMatrix = new Matrix();
+            @Nullable private SweepGradient enchantSweep;
+            @Nullable private LinearGradient enchantGlint;
+            private boolean enchantBroken;
             private int layerColor;
             /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
             @Nullable private RenderNode iconsNode;
@@ -3030,11 +3037,16 @@ public final class GlassTabBar {
                     // As on iOS 26: at rest the selected tab has a flat capsule, and the glass lens only lifts off
                     // it while a finger holds it or it is on its way, then settles back into the capsule.
                     float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
-                    float move = Math.min(1f, wider / LENS_MOVE_DP);
+                    // How much the lens is on the move, from how far it is stretched and from the slide it is on, so
+                    // an ordinary move shows it as well as a fast one.
+                    float travelPx = (toLeft + toRight - fromLeft - fromRight) / 2f;
+                    float slide = elapsed < SPRING_MS && Math.abs(travelPx) > density * 6f
+                            ? (float) Math.sin(Math.PI * Math.min(1d, elapsed / (SPRING_MS * 0.75d))) : 0f;
+                    float move = Math.max((float) Math.sqrt(Math.min(1f, Math.max(0f, wider - 0.3f) / LENS_MOVE_DP)), 0.85f * slide);
                     float raw = Math.max(held, move);
                     float lift = raw * raw * (3f - 2f * raw);
-                    // How much the glass bends and smears what's under it: clear at rest, a little when held, most at speed.
-                    layerEnergy = Math.max(move * move * (3f - 2f * move), 0.35f * held);
+                    // How much the glass bends and smears what's under it: clear at rest, a little when held, most on the move.
+                    layerEnergy = Math.max(move * move * (3f - 2f * move), 0.45f * held);
                     if (lift > 0.01f) {
                         // Over the tabs, so the lens can bend them (#paintBubbleLayer).
                         layerRect.set(capsule);
@@ -3056,7 +3068,7 @@ public final class GlassTabBar {
                 }
                 boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
                 boolean swelling = bubble && heldAt != 0 && now - heldAt < SPRING_MS;
-                if (stretching || chasing || swelling || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
+                if (stretching || chasing || swelling || layerOn || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
             }
 
             /**
@@ -3102,7 +3114,7 @@ public final class GlassTabBar {
                     capsule.set(layerRect);
                     if (layerAlpha < 0.99f) {
                         layerBounds.set(capsule);
-                        layerBounds.inset(-dp(6), -dp(6));
+                        layerBounds.inset(-dp(14), -dp(14));
                         faded = canvas.saveLayerAlpha(layerBounds, Math.round(255f * layerAlpha));
                     }
                     float corner = layerCorner;
@@ -3115,6 +3127,14 @@ public final class GlassTabBar {
                     canvas.drawRoundRect(capsule, corner, corner, fill);
                     if (!bendTabs(canvas, corner)) magnifyTabs(canvas, corner);
                     paintBubble(canvas, corner, 1f);
+                    if (!enchantBroken) {
+                        try {
+                            paintEnchant(canvas, corner);
+                        } catch (Throwable failure) {
+                            enchantBroken = true;
+                            diagnose("lens enchantment failed", failure);
+                        }
+                    }
                 } catch (Throwable failure) {
                     layerBroken = true;
                     layerOn = false;
@@ -3123,6 +3143,73 @@ public final class GlassTabBar {
                 } finally {
                     if (faded >= 0) canvas.restoreToCount(faded);
                 }
+            }
+
+            /**
+             * What makes the lens pretty: a soft glow in the colours of a rainbow that turns round it, a thin
+             * rainbow rim, a glint that sweeps across the glass as it moves, and a few sparkles that twinkle on
+             * it. All of it grows with how much the lens is moving and is gone with it.
+             */
+            private void paintEnchant(@NonNull Canvas canvas, float corner) {
+                float energy = layerEnergy;
+                long now = SystemClock.uptimeMillis();
+                float turn = (now % 4000L) / 4000f;
+                if (enchantSweep == null || enchantGlint == null) {
+                    enchantSweep = new SweepGradient(0f, 0f, new int[] {
+                            0xffff7ad9, 0xffb57bff, 0xff6fa8ff, 0xff6ff0e0, 0xffa6ff9e, 0xffffe27a, 0xffff7ad9}, null);
+                    enchantGlint = new LinearGradient(0f, 0f, density * 120f, 0f,
+                            new int[] {0x00ffffff, 0x70ffd9f6, 0x70d9f4ff, 0x00ffffff},
+                            new float[] {0f, 0.42f, 0.58f, 1f}, Shader.TileMode.REPEAT);
+                }
+                float middleX = capsule.centerX();
+                float middleY = capsule.centerY();
+                float presence = 0.35f + 0.65f * energy;
+                // The glow, and the rim, in the rainbow turning round the lens.
+                enchantMatrix.setRotate(turn * 360f);
+                enchantMatrix.postTranslate(middleX, middleY);
+                enchantSweep.setLocalMatrix(enchantMatrix);
+                enchantPaint.setShader(enchantSweep);
+                enchantPaint.setStyle(Paint.Style.STROKE);
+                for (int ring = 3; ring >= 0; ring--) {
+                    float reach = density * (1f + ring * 2.4f);
+                    layerBounds.set(capsule);
+                    layerBounds.inset(-reach, -reach);
+                    enchantPaint.setStrokeWidth(density * 2.6f);
+                    enchantPaint.setAlpha(Math.round(255f * (0.20f - 0.045f * ring) * presence));
+                    canvas.drawRoundRect(layerBounds, corner + reach, corner + reach, enchantPaint);
+                }
+                enchantPaint.setStrokeWidth(density * 1.3f);
+                enchantPaint.setAlpha(Math.round(255f * (0.30f + 0.55f * energy)));
+                canvas.drawRoundRect(capsule, corner, corner, enchantPaint);
+                // The glint, and the sparkles, only on the glass.
+                layerPath.rewind();
+                layerPath.addRoundRect(capsule, corner, corner, Path.Direction.CW);
+                int saved = canvas.save();
+                canvas.clipPath(layerPath);
+                enchantMatrix.setRotate(-18f);
+                enchantMatrix.postTranslate(middleX * 0.8f + turn * density * 240f, capsule.top);
+                enchantGlint.setLocalMatrix(enchantMatrix);
+                enchantPaint.setShader(enchantGlint);
+                enchantPaint.setStyle(Paint.Style.FILL);
+                enchantPaint.setAlpha(Math.round(255f * (0.25f + 0.75f * energy)));
+                canvas.drawRect(capsule, enchantPaint);
+                enchantPaint.setShader(null);
+                enchantPaint.setStyle(Paint.Style.STROKE);
+                enchantPaint.setStrokeCap(Paint.Cap.ROUND);
+                enchantPaint.setStrokeWidth(density * 1.1f);
+                for (int i = 0; i < 7; i++) {
+                    float seed = i * 1.618f;
+                    float x = capsule.left + capsule.width() * (0.12f + 0.76f * ((seed * 0.37f) % 1f));
+                    float y = capsule.top + capsule.height() * (0.18f + 0.64f * ((seed * 0.73f + 0.3f) % 1f));
+                    float twinkle = 0.5f + 0.5f * (float) Math.sin(now / 240d + seed * 2.1d);
+                    float size = density * (1.4f + 2.6f * twinkle);
+                    enchantPaint.setColor(0xffffffff);
+                    enchantPaint.setAlpha(Math.round(255f * twinkle * twinkle * (0.2f + 0.8f * energy)));
+                    canvas.drawLine(x - size, y, x + size, y, enchantPaint);
+                    canvas.drawLine(x, y - size, x, y + size, enchantPaint);
+                }
+                enchantPaint.setStrokeCap(Paint.Cap.BUTT);
+                canvas.restoreToCount(saved);
             }
 
             /**
@@ -3683,7 +3770,7 @@ public final class GlassTabBar {
     /** How far in at the lens's very edge the tabs are drawn in, as a multiple of where they would sit. */
     static final float LENS_EDGE_PULL = 0.8f;
     /** The stretch, in dp, at which the lens counts as fully lifted off the tab's capsule. */
-    static final float LENS_MOVE_DP = 12f;
+    static final float LENS_MOVE_DP = 4f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
