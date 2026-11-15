@@ -2717,6 +2717,12 @@ public final class GlassTabBar {
             /** Where the capsule is sliding from and to, and when the slide started, on the frame clock. */
             private float fromLeft = Float.NaN, fromRight, toLeft, toRight, nowLeft, nowRight;
             private long slideStart;
+            /** How fast the capsule's middle is moving, in px a second, smoothed, and where it was when that was last worked out. */
+            private float motion, lastMid = Float.NaN;
+            private long lastMotionAt;
+            /** While a finger slides the liquid bubble it trails the finger a little: where it is, where the finger is, and when. */
+            private float chaseLeft = Float.NaN, chaseGoal;
+            private long chaseAt;
             /** The size the liquid look's bubble is drawn at now, and at when the slide it is in began (#289). */
             private float bubbleNow = 1f, bubbleFrom = 1f;
             /** Whether the blurred backdrop was drawn into the pill this frame, which the bubble's lens needs. */
@@ -2893,11 +2899,22 @@ public final class GlassTabBar {
                 float targetLeft = Math.max(within.left + inset, selected.getLeft() + selected.getTranslationX() - grow);
                 float targetRight = Math.min(within.right - inset, selected.getRight() + selected.getTranslationX() + grow);
                 long now = AnimationUtils.currentAnimationTimeMillis();
+                if (Float.isNaN(dragX)) chaseLeft = Float.NaN;
                 if (!Float.isNaN(dragX)) {
                     // A finger slides it (#136): it sits on the finger, as wide as the selected tab's, and
                     // ticks for each tab it crosses. Once the finger lifts it slides from here to the tab.
                     float width = targetRight - targetLeft;
-                    fromLeft = nowLeft = toLeft = followLeft(dragX, width, rect.left + inset, rect.right - inset);
+                    float goal = followLeft(dragX, width, rect.left + inset, rect.right - inset);
+                    if (!liquidNow() || Float.isNaN(chaseLeft) || now - chaseAt > 100) {
+                        chaseLeft = goal;
+                        chaseAt = now;
+                    } else if (now > chaseAt) {
+                        // The bubble is a drop of liquid, so it lags the finger a little and catches up.
+                        chaseLeft += (goal - chaseLeft) * (1f - (float) Math.exp(-(now - chaseAt) / BUBBLE_CHASE_MS));
+                        chaseAt = now;
+                    }
+                    chaseGoal = goal;
+                    fromLeft = nowLeft = toLeft = chaseLeft;
                     fromRight = nowRight = toRight = toLeft + width;
                     slideStart = now - SPRING_MS;
                     tickedThisSlide = false;
@@ -2931,18 +2948,35 @@ public final class GlassTabBar {
                     capsule.set(nowLeft, within.top + inset, nowRight, within.bottom - inset);
                 }
                 tick((nowLeft + nowRight) / 2f);
-                if (bubble && elapsed < SPRING_MS) {
-                    // The bubble stretches along its way and gives up a little height, as a drop of liquid does
-                    // when it's pulled: the faster the spring is moving it, the more. At rest it's as it was.
-                    float travel = (toLeft + toRight - fromLeft - fromRight) / 2f;
-                    float wider = stretchDp(travel * springVelocity(elapsed) / density);
-                    if (wider * density > 0.5f) {
-                        float squash = capsule.height() * (1f - squashKept(wider)) / 2f;
-                        capsule.inset(-wider * density / 2f, squash);
-                        capsule.left = Math.max(capsule.left, within.left);
-                        capsule.right = Math.min(capsule.right, within.right);
-                        corner = Math.min(corner, capsule.height() / 2f);
-                    }
+                // The bubble stretches along its way and gives up a little height, as a drop of liquid does
+                // when it's pulled: the faster it is really moving, whether a finger drags it or the spring
+                // carries it, the more, and more at the edge it leads with. At rest it's as it was.
+                float mid = (nowLeft + nowRight) / 2f;
+                if (!bubble) {
+                    motion = 0f;
+                    lastMid = Float.NaN;
+                } else if (Float.isNaN(lastMid) || now - lastMotionAt > 100) {
+                    motion = 0f;
+                    lastMid = mid;
+                    lastMotionAt = now;
+                } else if (now > lastMotionAt) {
+                    long gap = now - lastMotionAt;
+                    float measured = (mid - lastMid) * 1000f / gap;
+                    motion += (measured - motion) * (1f - (float) Math.exp(-gap / BUBBLE_MOTION_MS));
+                    lastMid = mid;
+                    lastMotionAt = now;
+                }
+                float wider = stretchDp(motion / density);
+                boolean stretching = bubble && wider * density > 0.5f;
+                if (stretching) {
+                    float extra = wider * density;
+                    float lead = motion >= 0f ? BUBBLE_STRETCH_LEAD : 1f - BUBBLE_STRETCH_LEAD;
+                    float squash = capsule.height() * (1f - squashKept(wider)) / 2f;
+                    capsule.set(capsule.left - extra * (1f - lead), capsule.top + squash,
+                            capsule.right + extra * lead, capsule.bottom - squash);
+                    capsule.left = Math.max(capsule.left, within.left);
+                    capsule.right = Math.min(capsule.right, within.right);
+                    corner = Math.min(corner, capsule.height() / 2f);
                 }
                 int color = highlight(base);
                 if (share < 1f) color = (color & 0x00ffffff) | (scaledAlpha(Color.alpha(color), Math.max(0f, share)) << 24);
@@ -2956,7 +2990,8 @@ public final class GlassTabBar {
                 fill.setColor(color);
                 if (share > 0f) canvas.drawRoundRect(capsule, corner, corner, fill);
                 if (bubble) paintBubble(canvas, corner, share);
-                if (elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
+                boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
+                if (stretching || chasing || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
             }
 
             /**
@@ -3475,11 +3510,16 @@ public final class GlassTabBar {
     }
 
     /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
-    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.035f;
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.045f;
     /** The most the bubble stretches, in dp of width, however fast it goes. */
-    static final float BUBBLE_STRETCH_MAX_DP = 30f;
+    static final float BUBBLE_STRETCH_MAX_DP = 34f;
     /** The share of its height the bubble gives up at the full stretch. */
-    static final float BUBBLE_SQUASH_MAX = 0.12f;
+    static final float BUBBLE_SQUASH_MAX = 0.16f;
+    /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
+    static final float BUBBLE_STRETCH_LEAD = 0.65f;
+    /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
+    static final float BUBBLE_MOTION_MS = 40f;
+    static final float BUBBLE_CHASE_MS = 45f;
 
     /**
      * How fast the bubble's spring is moving [elapsed] ms into it, in progress a second: the slope of
