@@ -2734,7 +2734,7 @@ public final class GlassTabBar {
             private final RectF layerRect = new RectF();
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
-            private float layerCorner, layerAlpha;
+            private float layerCorner, layerAlpha, layerEnergy;
             private int layerColor;
             /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
             @Nullable private RenderNode iconsNode;
@@ -3030,8 +3030,11 @@ public final class GlassTabBar {
                     // As on iOS 26: at rest the selected tab has a flat capsule, and the glass lens only lifts off
                     // it while a finger holds it or it is on its way, then settles back into the capsule.
                     float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
-                    float raw = Math.max(held, Math.min(1f, wider / LENS_MOVE_DP));
+                    float move = Math.min(1f, wider / LENS_MOVE_DP);
+                    float raw = Math.max(held, move);
                     float lift = raw * raw * (3f - 2f * raw);
+                    // How much the glass bends and smears what's under it: clear at rest, a little when held, most at speed.
+                    layerEnergy = Math.max(move * move * (3f - 2f * move), 0.35f * held);
                     if (lift > 0.01f) {
                         // Over the tabs, so the lens can bend them (#paintBubbleLayer).
                         layerRect.set(capsule);
@@ -3157,6 +3160,7 @@ public final class GlassTabBar {
                     made = GlassLens.edge(LENS_EDGE_PULL);
                     iconsLens = made;
                 }
+                made.energy(layerEnergy);
                 return made.paint(canvas, icons, 0f, 0f, 1f, width, height, capsule, corner);
             }
 
@@ -3677,7 +3681,7 @@ public final class GlassTabBar {
     static final float LENS_MAGNIFY = 1f;
     static final float LENS_FILL_SHARE = 0.45f;
     /** How far in at the lens's very edge the tabs are drawn in, as a multiple of where they would sit. */
-    static final float LENS_EDGE_PULL = 0.9f;
+    static final float LENS_EDGE_PULL = 0.8f;
     /** The stretch, in dp, at which the lens counts as fully lifted off the tab's capsule. */
     static final float LENS_MOVE_DP = 12f;
 

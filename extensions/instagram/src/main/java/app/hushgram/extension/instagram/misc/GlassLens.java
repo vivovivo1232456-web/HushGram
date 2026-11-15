@@ -74,15 +74,17 @@ public final class GlassLens {
             + "}\n";
 
     /**
-     * What sits over the glass seen through its edge: across the lens it is as it is, and the nearer a point is to
-     * the edge the further out it takes its colour from, to the power of four so the middle is left alone, which
-     * draws what is there in towards the edge and curls it, as the edge of a glass lens does.
+     * What sits over the glass seen through the lens. At rest it is as it is, drawn in a little at the very edge;
+     * the more the lens moves ([energy]) the more it is drawn in towards the edge, bulged at the middle, smeared
+     * along the way it moves, and split into its colours, the red and blue sides pulled apart, as light through
+     * moving glass is.
      */
     private static final String EDGE_SHADER = ""
             + "uniform shader content;\n"
             + "uniform float4 box;\n"
             + "uniform float radius;\n"
             + "uniform float amount;\n"
+            + "uniform float energy;\n"
             + "half4 main(float2 p) {\n"
             + "  float2 mid = (box.xy + box.zw) * 0.5;\n"
             + "  float2 hs = (box.zw - box.xy) * 0.5;\n"
@@ -93,8 +95,21 @@ public final class GlassLens {
             + "  float depth = clamp(-d / max(1.0, min(hs.x, hs.y)), 0.0, 1.0);\n"
             + "  float near = (1.0 - depth) * (1.0 - depth);\n"
             + "  near = near * near;\n"
-            + "  float2 source = mid + (p - mid) * (1.0 + amount * near);\n"
-            + "  return content.eval(source) * inside;\n"
+            + "  float2 rel = (p - mid) / hs;\n"
+            + "  float r2 = clamp(dot(rel, rel), 0.0, 1.0);\n"
+            + "  float k = 1.0 + amount * near * (0.6 + 0.4 * energy) - energy * 0.10 * (1.0 - r2);\n"
+            + "  float2 centre = mid + (p - mid) * k;\n"
+            + "  if (energy < 0.02) return content.eval(centre) * inside;\n"
+            + "  float reach = 0.05 * energy * hs.x;\n"
+            + "  half4 sum = half4(0.0);\n"
+            + "  for (int i = 0; i < 5; i++) {\n"
+            + "    float off = (float(i) / 4.0 * 2.0 - 1.0) * reach;\n"
+            + "    half4 cr = content.eval(centre + float2(off * (1.0 + 0.5 * energy), 0.0));\n"
+            + "    half4 cg = content.eval(centre + float2(off, 0.0));\n"
+            + "    half4 cb = content.eval(centre + float2(off * (1.0 - 0.5 * energy), 0.0));\n"
+            + "    sum += half4(cr.r, cg.g, cb.b, max(cr.a, max(cg.a, cb.a)));\n"
+            + "  }\n"
+            + "  return sum * 0.2 * inside;\n"
             + "}\n";
 
     /** How deep the rim's mirrored band reaches into the pill, as a share of the pill's half height. */
@@ -159,6 +174,12 @@ public final class GlassLens {
 
     private boolean edge;
     private float edgeAmount;
+    private float edgeEnergy;
+
+    /** How much the lens is moving, from 0 at rest to 1 at speed, which the edge lens bends and smears by. */
+    void energy(float moving) {
+        edgeEnergy = Math.max(0f, Math.min(1f, moving));
+    }
 
     /** The bend's strength in percent: the one being dragged, else the slider's, else the standard for a bar with no bend switch on. */
     int percent() {
@@ -206,6 +227,7 @@ public final class GlassLens {
             lens.setFloatUniform("radius", Math.max(0f, radius));
             if (edge) {
                 lens.setFloatUniform("amount", edgeAmount * scale(percent()));
+                lens.setFloatUniform("energy", edgeEnergy);
             } else if (rim) {
                 lens.setFloatUniform("band", bandShare(percent()) * across / 2f);
             } else {
