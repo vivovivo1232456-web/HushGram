@@ -1378,9 +1378,9 @@ public final class GlassTabBar {
         return Math.min(Math.round(dp * density), Math.max(0f, heightPx / 2f));
     }
 
-    /** The selected tab's capsule: a quarter of white on dark glass, a sixth of grey on light. */
+    /** The selected tab's capsule: a quarter of white on dark glass, 13% of black on light, which is the glass's colour x 0.87. */
     static int highlight(int base) {
-        return isDark(base) ? 0x40ffffff : 0x2a787880;
+        return isDark(base) ? 0x40ffffff : 0x21000000;
     }
 
     static int edge(int base) {
@@ -3038,10 +3038,20 @@ public final class GlassTabBar {
                     capsule.inset(-capsule.width() * swell, -capsule.height() * swell);
                     corner *= bubbleNow;
                 }
-                if (bubble && share >= 1f && layerAdded && !layerBroken && canvas.isHardwareAccelerated()) {
+                // How much the capsule has let go of its flat fill: held by a finger, or on the move, or stretched.
+                float held = bubble ? Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL)) : 0f;
+                float lifted = 0f;
+                if (bubble) {
+                    float travelPx = (toLeft + toRight - fromLeft - fromRight) / 2f;
+                    float slide = elapsed < SPRING_MS && Math.abs(travelPx) > density * 6f
+                            ? (float) Math.sin(Math.PI * Math.min(1d, elapsed / (SPRING_MS * 0.75d))) : 0f;
+                    float moving = Math.max((float) Math.sqrt(Math.min(1f, Math.max(0f, wider - 0.3f) / LENS_MOVE_DP)), slide);
+                    float raw = Math.max(held, moving);
+                    lifted = raw * raw * (3f - 2f * raw);
+                }
+                if (LENS_OVER_TABS && bubble && share >= 1f && layerAdded && !layerBroken && canvas.isHardwareAccelerated()) {
                     // As on iOS 26: at rest the selected tab has a flat capsule, and the glass lens only lifts off
                     // it while a finger holds it or it is on its way, then settles back into the capsule.
-                    float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
                     // How much the lens is on the move, from how far it is stretched and from the slide it is on, so
                     // an ordinary move shows it as well as a fast one.
                     float travelPx = (toLeft + toRight - fromLeft - fromRight) / 2f;
@@ -3066,10 +3076,14 @@ public final class GlassTabBar {
                         canvas.drawRoundRect(capsule, corner, corner, fill);
                     }
                 } else {
-                    if (bubble) paintLens(canvas, corner);
-                    fill.setColor(color);
-                    if (share > 0f) canvas.drawRoundRect(capsule, corner, corner, fill);
-                    if (bubble) paintBubble(canvas, corner, share);
+                    if (bubble && LENS_OVER_TABS) paintLens(canvas, corner);
+                    if (bubble && !LENS_OVER_TABS) {
+                        if (share > 0f) paintCapsule(canvas, corner, color, lifted);
+                    } else {
+                        fill.setColor(color);
+                        if (share > 0f) canvas.drawRoundRect(capsule, corner, corner, fill);
+                        if (bubble) paintBubble(canvas, corner, share);
+                    }
                 }
                 boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
                 boolean swelling = bubble && heldAt != 0 && now - heldAt < SPRING_MS;
@@ -3161,6 +3175,42 @@ public final class GlassTabBar {
                     bar.invalidate();
                 } finally {
                     if (faded >= 0) canvas.restoreToCount(faded);
+                }
+            }
+
+            /**
+             * The selected tab's capsule as iOS 26 draws it: at rest the glass's colour a little darker, flat, with a
+             * soft edge; while it is held or slides ([lifted] 0 to 1) it goes pale across the middle and keeps the darker
+             * colour as a soft rim a few dp deep, as a clear lens does. The tabs over it stay as they are.
+             */
+            private void paintCapsule(@NonNull Canvas canvas, float corner, int color, float lifted) {
+                int alpha = Color.alpha(color);
+                float middle = 1f - 0.64f * lifted;
+                fill.setColor((color & 0x00ffffff) | (scaledAlpha(alpha, middle) << 24));
+                canvas.drawRoundRect(capsule, corner, corner, fill);
+                enchantPaint.setShader(null);
+                enchantPaint.setStyle(Paint.Style.STROKE);
+                enchantPaint.setColor(color | 0xff000000);
+                float line = density * 1.1f;
+                enchantPaint.setStrokeWidth(line);
+                float left = capsule.left, top = capsule.top, right = capsule.right, bottom = capsule.bottom;
+                // The edge is soft: two faint rings just outside it.
+                for (int ring = 0; ring < 2; ring++) {
+                    float out = density * (0.45f + ring * 0.95f);
+                    layerBounds.set(left - out, top - out, right + out, bottom + out);
+                    enchantPaint.setAlpha(Math.round(alpha * (0.34f - 0.16f * ring)));
+                    canvas.drawRoundRect(layerBounds, corner + out, corner + out, enchantPaint);
+                }
+                // The rim kept while lifted: strongest at the edge, gone five dp in.
+                if (lifted > 0.01f) {
+                    for (int ring = 0; ring < 5; ring++) {
+                        float in = density * (0.55f + ring * 1.0f);
+                        if (right - left <= 2f * in || bottom - top <= 2f * in) break;
+                        layerBounds.set(left + in, top + in, right - in, bottom - in);
+                        float fade = 1f - ring / 5f;
+                        enchantPaint.setAlpha(Math.round(alpha * 0.9f * lifted * fade * fade));
+                        canvas.drawRoundRect(layerBounds, Math.max(0f, corner - in), Math.max(0f, corner - in), enchantPaint);
+                    }
                 }
             }
 
@@ -3566,7 +3616,7 @@ public final class GlassTabBar {
              * edge, and not a frosted copy of it. If this fails the lens uses the blurred backdrop.
              */
             private void recordClear(RenderNode content, int width, int height) {
-                if (clearBroken) return;
+                if (clearBroken || !LENS_OVER_TABS) return;
                 try {
                     RenderNode clear = clearNode;
                     if (clear == null) {
@@ -3810,9 +3860,9 @@ public final class GlassTabBar {
     }
 
     /** How much larger the liquid look's bubble is while it moves between tabs, and under a finger (#289). */
-    static final float BUBBLE_SWELL = 0.10f;
+    static final float BUBBLE_SWELL = 0.03f;
     /** How much bigger the bubble is while a finger holds it, like a lens lifted off the glass. */
-    static final float BUBBLE_HELD_SWELL = 0.20f;
+    static final float BUBBLE_HELD_SWELL = 0.06f;
     /** How much the lens magnifies the tabs under it when the shader can't (none), and how much of the highlight's colour it keeps. */
     static final float LENS_MAGNIFY = 1f;
     static final float LENS_FILL_SHARE = 0.2f;
@@ -3820,6 +3870,12 @@ public final class GlassTabBar {
     static final float LENS_EDGE_PULL = 0.8f;
     /** The stretch, in dp, at which the lens counts as fully lifted off the tab's capsule. */
     static final float LENS_MOVE_DP = 4f;
+    /**
+     * Whether the selected tab's bubble is a glass lens over the tabs that bends them (#289), as in 0.0.21 to 0.0.31, or,
+     * as in the iOS 26 tab bar the look was matched to, a soft flat capsule under crisp tabs that goes pale in the middle
+     * and keeps a darker soft rim while it is held or on its way.
+     */
+    static final boolean LENS_OVER_TABS = false;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
@@ -3835,11 +3891,11 @@ public final class GlassTabBar {
     }
 
     /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
-    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.045f;
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.015f;
     /** The most the bubble stretches, in dp of width, however fast it goes. */
-    static final float BUBBLE_STRETCH_MAX_DP = 34f;
+    static final float BUBBLE_STRETCH_MAX_DP = 10f;
     /** The share of its height the bubble gives up at the full stretch. */
-    static final float BUBBLE_SQUASH_MAX = 0.16f;
+    static final float BUBBLE_SQUASH_MAX = 0.04f;
     /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
     static final float BUBBLE_STRETCH_LEAD = 0.65f;
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */

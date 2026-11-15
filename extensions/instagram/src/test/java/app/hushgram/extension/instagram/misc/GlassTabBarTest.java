@@ -1813,7 +1813,7 @@ public class GlassTabBarTest {
     @Test
     public void highlightAndEdgeAreWhiteOnDarkAndGreyOrBlackOnLight() {
         assertEquals(0xff, Color.red(GlassTabBar.highlight(Color.BLACK)));
-        assertEquals(0x78, Color.red(GlassTabBar.highlight(Color.WHITE)));
+        assertEquals(0x00, Color.red(GlassTabBar.highlight(Color.WHITE)));
         assertEquals(0xff, Color.red(GlassTabBar.edge(Color.BLACK)));
         assertEquals(0x00, Color.red(GlassTabBar.edge(Color.WHITE)));
     }
