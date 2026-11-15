@@ -20,8 +20,6 @@ import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffColorFilter;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -135,8 +133,6 @@ public final class GlassTabBar {
     static final String REEL_FOOTERS = "clips_footer_mask_container";
     /** The Search tab, a child of the bar, which the liquid look puts in a circle of its own (#65). */
     static final String SEARCH_TAB = "search_tab";
-    /** The profile tab shows the account's picture, which the lens magnifies but does not recolour. */
-    static final String PROFILE_TAB = "profile_tab";
     /** The Reels tab, a child of the bar. With it selected a reel keeps the pill's slot while the bar hides (#347). */
     static final String REELS_TAB = "clips_tab";
     /**
@@ -2735,9 +2731,11 @@ public final class GlassTabBar {
             private final RectF layerRect = new RectF();
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
-            private final Paint iconTint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private float layerCorner;
-            private int layerColor, iconTintColor;
+            private int layerColor;
+            /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
+            @Nullable private RenderNode iconsNode;
+            @Nullable private GlassLens iconsLens;
             private boolean layerOn, layerBroken, layerAdded;
             private final Drawable layer = new Drawable() {
                 @Override public void draw(@NonNull Canvas canvas) {
@@ -3081,9 +3079,10 @@ public final class GlassTabBar {
                         fill.setColor(base | 0xff000000);
                         canvas.drawRoundRect(capsule, corner, corner, fill);
                     }
-                    fill.setColor(layerColor);
+                    // The lens is clear glass: only a faint lift of colour over it, so what's seen through it shows.
+                    fill.setColor((layerColor & 0x00ffffff) | (scaledAlpha(Color.alpha(layerColor), LENS_FILL_SHARE) << 24));
                     canvas.drawRoundRect(capsule, corner, corner, fill);
-                    magnifyTabs(canvas, corner);
+                    if (!bendTabs(canvas, corner)) magnifyTabs(canvas, corner);
                     paintBubble(canvas, corner, 1f);
                 } catch (Throwable failure) {
                     layerBroken = true;
@@ -3093,21 +3092,51 @@ public final class GlassTabBar {
                 }
             }
 
-            /** Each tab the bubble covers, drawn [LENS_MAGNIFY] times bigger about the bubble's middle and clipped to it. */
+            /**
+             * The tabs seen through the lens: recorded as they are, then run through the lens's shader, which
+             * magnifies them at its middle and bends them more towards its rim, as glass does, so an icon
+             * leaving the lens stretches and curls at its edge. Says whether it drew.
+             */
+            private boolean bendTabs(@NonNull Canvas canvas, float corner) {
+                if (!GlassLens.supported()) return false;
+                int width = bar.getWidth();
+                int height = bar.getHeight();
+                if (width <= 0 || height <= 0) return false;
+                RenderNode icons = iconsNode;
+                if (icons == null) {
+                    icons = new RenderNode("hushgram-glass-icons");
+                    iconsNode = icons;
+                }
+                icons.setPosition(0, 0, width, height);
+                Canvas recording = icons.beginRecording(width, height);
+                try {
+                    for (int i = 0; i < bar.getChildCount(); i++) {
+                        View tab = bar.getChildAt(i);
+                        if (tab.getVisibility() != View.VISIBLE || tab.getWidth() <= 0 || tab.getHeight() <= 0) continue;
+                        int saved = recording.save();
+                        recording.translate(tab.getLeft() + tab.getTranslationX(), tab.getTop() + tab.getTranslationY());
+                        tab.draw(recording);
+                        recording.restoreToCount(saved);
+                    }
+                } finally {
+                    icons.endRecording();
+                }
+                GlassLens made = iconsLens;
+                if (made == null) {
+                    made = new GlassLens(LENS_ICON_MAGNIFY, LENS_ICON_BEND);
+                    iconsLens = made;
+                }
+                return made.paint(canvas, icons, 0f, 0f, 1f, width, height, capsule, corner);
+            }
+
+            /** The fallback for [bendTabs]: each tab the bubble covers, [LENS_MAGNIFY] times bigger about its middle, clipped to it. */
             private void magnifyTabs(@NonNull Canvas canvas, float corner) {
                 float middleX = capsule.centerX();
                 float middleY = capsule.centerY();
-                int accent = isDark(base) ? 0xff4c97ff : 0xff0a74ff;
-                if (iconTintColor != accent) {
-                    iconTint.setColorFilter(new PorterDuffColorFilter(accent, PorterDuff.Mode.SRC_IN));
-                    iconTintColor = accent;
-                }
-                int profile = id(bar.getContext(), PROFILE_TAB);
                 layerPath.rewind();
                 layerPath.addRoundRect(capsule, corner, corner, Path.Direction.CW);
                 int clipSave = canvas.save();
                 canvas.clipPath(layerPath);
-                float pad = dp(8);
                 for (int i = 0; i < bar.getChildCount(); i++) {
                     View tab = bar.getChildAt(i);
                     if (tab.getVisibility() != View.VISIBLE || tab.getWidth() <= 0 || tab.getHeight() <= 0) continue;
@@ -3121,10 +3150,6 @@ public final class GlassTabBar {
                     canvas.scale(LENS_MAGNIFY, LENS_MAGNIFY);
                     canvas.translate(-middleX, -middleY);
                     canvas.translate(left, top);
-                    if (profile == 0 || tab.getId() != profile) {
-                        layerBounds.set(-pad, -pad, tab.getWidth() + pad, tab.getHeight() + pad);
-                        canvas.saveLayer(layerBounds, iconTint);
-                    }
                     tab.draw(canvas);
                     canvas.restoreToCount(saved);
                 }
@@ -3617,8 +3642,12 @@ public final class GlassTabBar {
     static final float BUBBLE_SWELL = 0.14f;
     /** How much bigger the bubble is while a finger holds it, like a lens lifted off the glass. */
     static final float BUBBLE_HELD_SWELL = 0.28f;
-    /** How much the lens magnifies the tabs under it, which it also turns to the accent colour. */
+    /** How much the lens magnifies the tabs under it when the shader can't, and how much of the highlight's colour it keeps. */
     static final float LENS_MAGNIFY = 1.22f;
+    static final float LENS_FILL_SHARE = 0.45f;
+    /** How much the lens magnifies the tabs at its middle and bends them at its rim, as {@link GlassLens} takes them. */
+    static final float LENS_ICON_MAGNIFY = 0.20f;
+    static final float LENS_ICON_BEND = 0.30f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to

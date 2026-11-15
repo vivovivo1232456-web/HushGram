@@ -121,6 +121,16 @@ public final class GlassLens {
         this.rim = rim;
     }
 
+    /** A lens for what sits over the glass, with its own [magnify] at the middle and [bend] at the rim. */
+    GlassLens(float magnify, float bend) {
+        this.rim = false;
+        this.centreMagnify = magnify;
+        this.rimBend = bend;
+    }
+
+    private float centreMagnify = CENTRE_MAGNIFY;
+    private float rimBend = RIM_BEND;
+
     /** The bend's strength in percent: the one being dragged, else the slider's, else the standard for a bar with no bend switch on. */
     int percent() {
         if (strengthNow >= 0) return strengthNow;
@@ -169,8 +179,8 @@ public final class GlassLens {
                 lens.setFloatUniform("band", bandShare(percent()) * across / 2f);
             } else {
                 float bend = scale(percent());
-                lens.setFloatUniform("centre", CENTRE_MAGNIFY * bend);
-                lens.setFloatUniform("rim", RIM_BEND * bend);
+                lens.setFloatUniform("centre", centreMagnify * bend);
+                lens.setFloatUniform("rim", rimBend * bend);
             }
             layer.setPosition(0, 0, width, height);
             layer.setRenderEffect(RenderEffect.createRuntimeShaderEffect(lens, "content"));
