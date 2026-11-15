@@ -2734,7 +2734,7 @@ public final class GlassTabBar {
             private final RectF layerRect = new RectF();
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
-            private float layerCorner;
+            private float layerCorner, layerAlpha;
             private int layerColor;
             /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
             @Nullable private RenderNode iconsNode;
@@ -3027,12 +3027,24 @@ public final class GlassTabBar {
                     corner *= bubbleNow;
                 }
                 if (bubble && share >= 1f && layerAdded && !layerBroken && canvas.isHardwareAccelerated()) {
-                    // Over the tabs, so the lens can show them bigger (#paintBubbleLayer).
-                    layerRect.set(capsule);
-                    layerCorner = corner;
-                    layerColor = color;
-                    layerOn = true;
-                    layer.setBounds(0, 0, bar.getWidth(), bar.getHeight());
+                    // As on iOS 26: at rest the selected tab has a flat capsule, and the glass lens only lifts off
+                    // it while a finger holds it or it is on its way, then settles back into the capsule.
+                    float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
+                    float raw = Math.max(held, Math.min(1f, wider / LENS_MOVE_DP));
+                    float lift = raw * raw * (3f - 2f * raw);
+                    if (lift > 0.01f) {
+                        // Over the tabs, so the lens can bend them (#paintBubbleLayer).
+                        layerRect.set(capsule);
+                        layerCorner = corner;
+                        layerColor = color;
+                        layerAlpha = lift;
+                        layerOn = true;
+                        layer.setBounds(0, 0, bar.getWidth(), bar.getHeight());
+                    }
+                    if (lift < 0.99f) {
+                        fill.setColor((color & 0x00ffffff) | (scaledAlpha(Color.alpha(color), 1f - lift) << 24));
+                        canvas.drawRoundRect(capsule, corner, corner, fill);
+                    }
                 } else {
                     if (bubble) paintLens(canvas, corner);
                     fill.setColor(color);
@@ -3082,8 +3094,14 @@ public final class GlassTabBar {
              */
             private void paintBubbleLayer(@NonNull Canvas canvas) {
                 if (!layerOn || layerBroken || bar.getBackground() != this) return;
+                int faded = -1;
                 try {
                     capsule.set(layerRect);
+                    if (layerAlpha < 0.99f) {
+                        layerBounds.set(capsule);
+                        layerBounds.inset(-dp(6), -dp(6));
+                        faded = canvas.saveLayerAlpha(layerBounds, Math.round(255f * layerAlpha));
+                    }
                     float corner = layerCorner;
                     if (!paintLens(canvas, corner)) {
                         fill.setColor(base | 0xff000000);
@@ -3099,6 +3117,8 @@ public final class GlassTabBar {
                     layerOn = false;
                     diagnose("bubble layer failed", failure);
                     bar.invalidate();
+                } finally {
+                    if (faded >= 0) canvas.restoreToCount(faded);
                 }
             }
 
@@ -3658,6 +3678,8 @@ public final class GlassTabBar {
     static final float LENS_FILL_SHARE = 0.45f;
     /** How far in at the lens's very edge the tabs are drawn in, as a multiple of where they would sit. */
     static final float LENS_EDGE_PULL = 0.9f;
+    /** The stretch, in dp, at which the lens counts as fully lifted off the tab's capsule. */
+    static final float LENS_MOVE_DP = 12f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
