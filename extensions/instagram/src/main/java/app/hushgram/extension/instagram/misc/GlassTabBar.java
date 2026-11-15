@@ -2731,7 +2731,7 @@ public final class GlassTabBar {
             private final RectF layerRect = new RectF();
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
-            private float layerCorner, layerEnergy;
+            private float layerCorner;
             private int layerColor;
             /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
             @Nullable private RenderNode iconsNode;
@@ -3022,9 +3022,6 @@ public final class GlassTabBar {
                     layerRect.set(capsule);
                     layerCorner = corner;
                     layerColor = color;
-                    // At rest the glass shows its tabs about as they are; held or moving, it bends them.
-                    float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
-                    layerEnergy = Math.max(Math.min(1f, wider / LENS_MOVE_DP), held);
                     layerOn = true;
                     layer.setBounds(0, 0, bar.getWidth(), bar.getHeight());
                 } else {
@@ -3096,9 +3093,9 @@ public final class GlassTabBar {
             }
 
             /**
-             * The tabs seen through the lens: recorded as they are, then run through the lens's shader, which
-             * magnifies them at its middle and bends them more towards its rim, as glass does, so an icon
-             * leaving the lens stretches and curls at its edge. Says whether it drew.
+             * The tabs seen through the lens: recorded as they are, then run through the rim's shader, so they
+             * keep their size and place, and an icon that crosses the lens's edge bends and curls there as it
+             * would through glass. Says whether it drew.
              */
             private boolean bendTabs(@NonNull Canvas canvas, float corner) {
                 if (!GlassLens.supported()) return false;
@@ -3126,11 +3123,10 @@ public final class GlassTabBar {
                 }
                 GlassLens made = iconsLens;
                 if (made == null) {
-                    made = new GlassLens(LENS_ICON_REST_MAGNIFY, LENS_ICON_REST_BEND);
+                    // The rim's shader, not the magnifier's: the tabs stay their size and only bend at the edge.
+                    made = new GlassLens(true);
                     iconsLens = made;
                 }
-                made.centreMagnify = LENS_ICON_REST_MAGNIFY + (LENS_ICON_MOVE_MAGNIFY - LENS_ICON_REST_MAGNIFY) * layerEnergy;
-                made.rimBend = LENS_ICON_REST_BEND + (LENS_ICON_MOVE_BEND - LENS_ICON_REST_BEND) * layerEnergy;
                 return made.paint(canvas, icons, 0f, 0f, 1f, width, height, capsule, corner);
             }
 
@@ -3644,19 +3640,12 @@ public final class GlassTabBar {
     }
 
     /** How much larger the liquid look's bubble is while it moves between tabs, and under a finger (#289). */
-    static final float BUBBLE_SWELL = 0.14f;
+    static final float BUBBLE_SWELL = 0.10f;
     /** How much bigger the bubble is while a finger holds it, like a lens lifted off the glass. */
-    static final float BUBBLE_HELD_SWELL = 0.28f;
-    /** How much the lens magnifies the tabs under it when the shader can't, and how much of the highlight's colour it keeps. */
-    static final float LENS_MAGNIFY = 1.22f;
+    static final float BUBBLE_HELD_SWELL = 0.20f;
+    /** How much the lens magnifies the tabs under it when the shader can't (none), and how much of the highlight's colour it keeps. */
+    static final float LENS_MAGNIFY = 1f;
     static final float LENS_FILL_SHARE = 0.45f;
-    /** How much the lens magnifies the tabs at its middle and bends them at its rim, as {@link GlassLens} takes them. */
-    static final float LENS_ICON_REST_MAGNIFY = 0.07f;
-    static final float LENS_ICON_REST_BEND = 0.02f;
-    static final float LENS_ICON_MOVE_MAGNIFY = 0.18f;
-    static final float LENS_ICON_MOVE_BEND = 0.30f;
-    /** The stretch, in dp, at which the lens counts as fully on the move, and bends the tabs the most. */
-    static final float LENS_MOVE_DP = 12f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
@@ -3672,16 +3661,16 @@ public final class GlassTabBar {
     }
 
     /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
-    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.045f;
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.025f;
     /** The most the bubble stretches, in dp of width, however fast it goes. */
-    static final float BUBBLE_STRETCH_MAX_DP = 34f;
+    static final float BUBBLE_STRETCH_MAX_DP = 14f;
     /** The share of its height the bubble gives up at the full stretch. */
-    static final float BUBBLE_SQUASH_MAX = 0.16f;
+    static final float BUBBLE_SQUASH_MAX = 0.08f;
     /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
-    static final float BUBBLE_STRETCH_LEAD = 0.65f;
+    static final float BUBBLE_STRETCH_LEAD = 0.6f;
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
-    static final float BUBBLE_MOTION_MS = 40f;
-    static final float BUBBLE_CHASE_MS = 45f;
+    static final float BUBBLE_MOTION_MS = 60f;
+    static final float BUBBLE_CHASE_MS = 35f;
 
     /**
      * How fast the bubble's spring is moving [elapsed] ms into it, in progress a second: the slope of
