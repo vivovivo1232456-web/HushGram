@@ -1809,7 +1809,7 @@ public class Settings extends BaseSettings {
      * for a restart. Off to start.
      */
     public static final BooleanSetting GLASS_TAB_BAR_LIQUID =
-            new BooleanSetting("hushgram_glass_tab_bar_liquid", FALSE, true, parent(GLASS_TAB_BAR));
+            new BooleanSetting("hushgram_glass_tab_bar_liquid", TRUE, true, parent(GLASS_TAB_BAR));
 
     /**
      * Under {@link #GLASS_TAB_BAR_LIQUID}: scrolling a list down leaves the liquid pill full size rather than
@@ -1843,7 +1843,7 @@ public class Settings extends BaseSettings {
      * can run a shader. Read as the bar is built, so a change asks for a restart. Off to start.
      */
     public static final BooleanSetting GLASS_TAB_BAR_REFRACT =
-            new BooleanSetting("hushgram_glass_tab_bar_refract", FALSE, true, parent(GLASS_TAB_BAR_BLUR));
+            new BooleanSetting("hushgram_glass_tab_bar_refract", TRUE, true, parent(GLASS_TAB_BAR_BLUR));
 
     /**
      * Under {@link #GLASS_TAB_BAR_HAPTICS}: which tick plays ({@link app.hushgram.extension.instagram.misc.HapticStyle}).
