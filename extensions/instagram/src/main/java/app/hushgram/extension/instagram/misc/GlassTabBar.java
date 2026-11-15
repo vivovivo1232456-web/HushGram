@@ -892,7 +892,7 @@ public final class GlassTabBar {
     /** How fast the bubble's spring swings, in radians a second: one swing in 0.4 s, about what iOS springs use. */
     static final double SPRING_SPEED = 2 * Math.PI / 0.4;
     /** How much of each swing the spring loses. This much carries the bubble about 7 percent past its tab. */
-    static final double SPRING_DAMPING = 0.65;
+    static final double SPRING_DAMPING = 0.5;
     /** How long a missing shadow or content view stays unsearched before the parent is walked for it again. */
     static final long RESEARCH_MS = 500;
     /**
@@ -1378,9 +1378,9 @@ public final class GlassTabBar {
         return Math.min(Math.round(dp * density), Math.max(0f, heightPx / 2f));
     }
 
-    /** The selected tab's capsule: a quarter of white on dark glass, 13% of black on light, which is the glass's colour x 0.87. */
+    /** The selected tab's capsule: 16% of white on dark glass, 13% of black on light, which is the glass's colour x 0.87. */
     static int highlight(int base) {
-        return isDark(base) ? 0x40ffffff : 0x21000000;
+        return isDark(base) ? 0x28ffffff : 0x21000000;
     }
 
     static int edge(int base) {
@@ -3185,7 +3185,8 @@ public final class GlassTabBar {
              */
             private void paintCapsule(@NonNull Canvas canvas, float corner, int color, float lifted) {
                 int alpha = Color.alpha(color);
-                float middle = 1f - 0.64f * lifted;
+                boolean dark = isDark(base);
+                float middle = 1f - (dark ? 0.45f : 0.64f) * lifted;
                 fill.setColor((color & 0x00ffffff) | (scaledAlpha(alpha, middle) << 24));
                 canvas.drawRoundRect(capsule, corner, corner, fill);
                 enchantPaint.setShader(null);
@@ -3208,7 +3209,7 @@ public final class GlassTabBar {
                         if (right - left <= 2f * in || bottom - top <= 2f * in) break;
                         layerBounds.set(left + in, top + in, right - in, bottom - in);
                         float fade = 1f - ring / 5f;
-                        enchantPaint.setAlpha(Math.round(alpha * 0.9f * lifted * fade * fade));
+                        enchantPaint.setAlpha(Math.round(alpha * (dark ? 0.5f : 0.9f) * lifted * fade * fade));
                         canvas.drawRoundRect(layerBounds, Math.max(0f, corner - in), Math.max(0f, corner - in), enchantPaint);
                     }
                 }
@@ -3860,9 +3861,9 @@ public final class GlassTabBar {
     }
 
     /** How much larger the liquid look's bubble is while it moves between tabs, and under a finger (#289). */
-    static final float BUBBLE_SWELL = 0.03f;
+    static final float BUBBLE_SWELL = 0.06f;
     /** How much bigger the bubble is while a finger holds it, like a lens lifted off the glass. */
-    static final float BUBBLE_HELD_SWELL = 0.06f;
+    static final float BUBBLE_HELD_SWELL = 0.18f;
     /** How much the lens magnifies the tabs under it when the shader can't (none), and how much of the highlight's colour it keeps. */
     static final float LENS_MAGNIFY = 1f;
     static final float LENS_FILL_SHARE = 0.2f;
@@ -3883,24 +3884,26 @@ public final class GlassTabBar {
      * it was already bigger, such as a finger letting go of it. 1 once the slide is over, or with none.
      */
     static float bubbleScale(long elapsed, float from) {
-        if (elapsed >= SLIDE_MS) return 1f;
+        if (elapsed >= (from > 1f ? SPRING_MS : SLIDE_MS)) return 1f;
         float t = Math.max(0f, elapsed) / (float) SLIDE_MS;
-        float swell = 1f + BUBBLE_SWELL * (float) Math.sin(Math.PI * t);
-        float carried = 1f + Math.max(0f, from - 1f) * (1f - t);
-        return Math.max(swell, carried);
+        float swell = t < 1f ? 1f + BUBBLE_SWELL * (float) Math.sin(Math.PI * t) : 1f;
+        if (from <= 1f) return swell;
+        // Let go of while bigger, it springs back to its size, a little under it and then to it, as jelly does.
+        float carried = 1f + (from - 1f) * (1f - springProgress(elapsed));
+        return t < 1f ? Math.max(swell, carried) : carried;
     }
 
     /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
-    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.015f;
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.03f;
     /** The most the bubble stretches, in dp of width, however fast it goes. */
-    static final float BUBBLE_STRETCH_MAX_DP = 10f;
+    static final float BUBBLE_STRETCH_MAX_DP = 18f;
     /** The share of its height the bubble gives up at the full stretch. */
-    static final float BUBBLE_SQUASH_MAX = 0.04f;
+    static final float BUBBLE_SQUASH_MAX = 0.08f;
     /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
     static final float BUBBLE_STRETCH_LEAD = 0.65f;
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
     static final float BUBBLE_MOTION_MS = 40f;
-    static final float BUBBLE_CHASE_MS = 45f;
+    static final float BUBBLE_CHASE_MS = 70f;
 
     /**
      * How fast the bubble's spring is moving [elapsed] ms into it, in progress a second: the slope of
