@@ -73,6 +73,30 @@ public final class GlassLens {
             + "  return content.eval(source) * inside;\n"
             + "}\n";
 
+    /**
+     * What sits over the glass seen through its edge: across the lens it is as it is, and the nearer a point is to
+     * the edge the further out it takes its colour from, to the power of four so the middle is left alone, which
+     * draws what is there in towards the edge and curls it, as the edge of a glass lens does.
+     */
+    private static final String EDGE_SHADER = ""
+            + "uniform shader content;\n"
+            + "uniform float4 box;\n"
+            + "uniform float radius;\n"
+            + "uniform float amount;\n"
+            + "half4 main(float2 p) {\n"
+            + "  float2 mid = (box.xy + box.zw) * 0.5;\n"
+            + "  float2 hs = (box.zw - box.xy) * 0.5;\n"
+            + "  float2 q = abs(p - mid) - (hs - float2(radius));\n"
+            + "  float d = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - radius;\n"
+            + "  float inside = clamp(0.5 - d, 0.0, 1.0);\n"
+            + "  if (inside <= 0.0) return half4(0.0);\n"
+            + "  float depth = clamp(-d / max(1.0, min(hs.x, hs.y)), 0.0, 1.0);\n"
+            + "  float near = (1.0 - depth) * (1.0 - depth);\n"
+            + "  near = near * near;\n"
+            + "  float2 source = mid + (p - mid) * (1.0 + amount * near);\n"
+            + "  return content.eval(source) * inside;\n"
+            + "}\n";
+
     /** How deep the rim's mirrored band reaches into the pill, as a share of the pill's half height. */
     static final float RIM_BAND = 0.42f;
 
@@ -121,16 +145,20 @@ public final class GlassLens {
         this.rim = rim;
     }
 
-    /** A lens for what sits over the glass, with its own [magnify] at the middle and [bend] at the rim. */
-    GlassLens(float magnify, float bend) {
-        this.rim = false;
-        this.centreMagnify = magnify;
-        this.rimBend = bend;
+    /**
+     * A lens for what sits over the glass, such as the tabs: they keep their size and place across the lens, and
+     * only close to its edge are they drawn in, as the glass's edge draws in what is past it. [amount] is
+     * how much at the very edge.
+     */
+    static GlassLens edge(float amount) {
+        GlassLens made = new GlassLens(false);
+        made.edge = true;
+        made.edgeAmount = amount;
+        return made;
     }
 
-    /** How much this lens magnifies at its middle and bends at its rim, which a caller may change between paints. */
-    float centreMagnify = CENTRE_MAGNIFY;
-    float rimBend = RIM_BEND;
+    private boolean edge;
+    private float edgeAmount;
 
     /** The bend's strength in percent: the one being dragged, else the slider's, else the standard for a bar with no bend switch on. */
     int percent() {
@@ -166,7 +194,7 @@ public final class GlassLens {
         try {
             RuntimeShader lens = shader;
             if (lens == null) {
-                lens = new RuntimeShader(rim ? RIM_SHADER : SHADER);
+                lens = new RuntimeShader(edge ? EDGE_SHADER : rim ? RIM_SHADER : SHADER);
                 shader = lens;
             }
             RenderNode layer = node;
@@ -176,12 +204,14 @@ public final class GlassLens {
             }
             lens.setFloatUniform("box", box.left, box.top, box.right, box.bottom);
             lens.setFloatUniform("radius", Math.max(0f, radius));
-            if (rim) {
+            if (edge) {
+                lens.setFloatUniform("amount", edgeAmount * scale(percent()));
+            } else if (rim) {
                 lens.setFloatUniform("band", bandShare(percent()) * across / 2f);
             } else {
                 float bend = scale(percent());
-                lens.setFloatUniform("centre", centreMagnify * bend);
-                lens.setFloatUniform("rim", rimBend * bend);
+                lens.setFloatUniform("centre", CENTRE_MAGNIFY * bend);
+                lens.setFloatUniform("rim", RIM_BEND * bend);
             }
             layer.setPosition(0, 0, width, height);
             layer.setRenderEffect(RenderEffect.createRuntimeShaderEffect(lens, "content"));

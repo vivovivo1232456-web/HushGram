@@ -2076,10 +2076,10 @@ public class GlassTabBarTest {
             Object glass = host.glass();
             ReflectionHelpers.setField(glass, "dragX", host.bar.getWidth() / 2f);
             try (Pixels ignored = host.background()) { }
-            assertEquals(1f + GlassTabBar.BUBBLE_HELD_SWELL, (float) ReflectionHelpers.getField(pill, "bubbleNow"), 0.001f);
+            assertTrue("swelling up from rest", (float) ReflectionHelpers.getField(pill, "bubbleNow") <= 1f + GlassTabBar.BUBBLE_HELD_SWELL + 0.05f);
             ReflectionHelpers.setField(glass, "dragX", Float.NaN);
             try (Pixels ignored = host.background()) { }
-            assertEquals("the lift starts the slide at the held size", 1f + GlassTabBar.BUBBLE_HELD_SWELL, (float) ReflectionHelpers.getField(pill, "bubbleFrom"), 0.001f);
+            assertTrue("the lift starts the slide at the size it had", (float) ReflectionHelpers.getField(pill, "bubbleFrom") <= 1f + GlassTabBar.BUBBLE_HELD_SWELL + 0.05f);
             assertTrue((float) ReflectionHelpers.getField(pill, "bubbleNow") > 1.05f);
         }
     }

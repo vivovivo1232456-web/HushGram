@@ -2724,6 +2724,9 @@ public final class GlassTabBar {
             /** While a finger slides the liquid bubble it trails the finger a little: where it is, where the finger is, and when. */
             private float chaseLeft = Float.NaN, chaseGoal;
             private long chaseAt;
+            /** When a finger took hold of the bubble, and how big it was then, so it swells up from there over the spring. */
+            private long heldAt;
+            private float heldFrom = 1f;
             /**
              * The liquid bubble is painted over the tabs, in the bar's overlay, so it can show them magnified: where
              * the last frame put it, whether it should be drawn, and whether that has failed on this phone.
@@ -2927,7 +2930,13 @@ public final class GlassTabBar {
                 float targetLeft = Math.max(within.left + inset, selected.getLeft() + selected.getTranslationX() - grow);
                 float targetRight = Math.min(within.right - inset, selected.getRight() + selected.getTranslationX() + grow);
                 long now = AnimationUtils.currentAnimationTimeMillis();
-                if (Float.isNaN(dragX)) chaseLeft = Float.NaN;
+                if (Float.isNaN(dragX)) {
+                    chaseLeft = Float.NaN;
+                    heldAt = 0;
+                } else if (heldAt == 0) {
+                    heldAt = now;
+                    heldFrom = bubbleNow;
+                }
                 if (!Float.isNaN(dragX)) {
                     // A finger slides it (#136): it sits on the finger, as wide as the selected tab's, and
                     // ticks for each tab it crosses. Once the finger lifts it slides from here to the tab.
@@ -2946,7 +2955,7 @@ public final class GlassTabBar {
                     fromRight = nowRight = toRight = toLeft + width;
                     slideStart = now - SPRING_MS;
                     tickedThisSlide = false;
-                    bubbleNow = bubbleFrom = 1f + BUBBLE_HELD_SWELL;
+                    bubbleNow = bubbleFrom = heldFrom + (1f + BUBBLE_HELD_SWELL - heldFrom) * springProgress(now - heldAt);
                 } else if (Float.isNaN(fromLeft) || share < 1f) {
                     fromLeft = nowLeft = toLeft = targetLeft;
                     fromRight = nowRight = toRight = targetRight;
@@ -3031,7 +3040,8 @@ public final class GlassTabBar {
                     if (bubble) paintBubble(canvas, corner, share);
                 }
                 boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
-                if (stretching || chasing || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
+                boolean swelling = bubble && heldAt != 0 && now - heldAt < SPRING_MS;
+                if (stretching || chasing || swelling || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
             }
 
             /**
@@ -3093,9 +3103,9 @@ public final class GlassTabBar {
             }
 
             /**
-             * The tabs seen through the lens: recorded as they are, then run through the rim's shader, so they
-             * keep their size and place, and an icon that crosses the lens's edge bends and curls there as it
-             * would through glass. Says whether it drew.
+             * The tabs seen through the lens: recorded as they are, then run through the lens's edge shader, so
+             * they keep their size and place, and an icon that crosses the lens's edge bends and curls in there
+             * as it would through glass, with no second copy of it. Says whether it drew.
              */
             private boolean bendTabs(@NonNull Canvas canvas, float corner) {
                 if (!GlassLens.supported()) return false;
@@ -3123,8 +3133,8 @@ public final class GlassTabBar {
                 }
                 GlassLens made = iconsLens;
                 if (made == null) {
-                    // The rim's shader, not the magnifier's: the tabs stay their size and only bend at the edge.
-                    made = new GlassLens(true);
+                    // The tabs stay their size and place and only curl in at the lens's edge.
+                    made = GlassLens.edge(LENS_EDGE_PULL);
                     iconsLens = made;
                 }
                 return made.paint(canvas, icons, 0f, 0f, 1f, width, height, capsule, corner);
@@ -3646,6 +3656,8 @@ public final class GlassTabBar {
     /** How much the lens magnifies the tabs under it when the shader can't (none), and how much of the highlight's colour it keeps. */
     static final float LENS_MAGNIFY = 1f;
     static final float LENS_FILL_SHARE = 0.45f;
+    /** How far in at the lens's very edge the tabs are drawn in, as a multiple of where they would sit. */
+    static final float LENS_EDGE_PULL = 0.9f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
@@ -3661,16 +3673,16 @@ public final class GlassTabBar {
     }
 
     /** How much wider the liquid look's bubble gets for each dp a second it travels, up to {@link #BUBBLE_STRETCH_MAX_DP}. */
-    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.025f;
+    static final float BUBBLE_STRETCH_DP_PER_DPS = 0.045f;
     /** The most the bubble stretches, in dp of width, however fast it goes. */
-    static final float BUBBLE_STRETCH_MAX_DP = 14f;
+    static final float BUBBLE_STRETCH_MAX_DP = 34f;
     /** The share of its height the bubble gives up at the full stretch. */
-    static final float BUBBLE_SQUASH_MAX = 0.08f;
+    static final float BUBBLE_SQUASH_MAX = 0.16f;
     /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
-    static final float BUBBLE_STRETCH_LEAD = 0.6f;
+    static final float BUBBLE_STRETCH_LEAD = 0.65f;
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
-    static final float BUBBLE_MOTION_MS = 60f;
-    static final float BUBBLE_CHASE_MS = 35f;
+    static final float BUBBLE_MOTION_MS = 40f;
+    static final float BUBBLE_CHASE_MS = 45f;
 
     /**
      * How fast the bubble's spring is moving [elapsed] ms into it, in progress a second: the slope of
