@@ -20,6 +20,8 @@ import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -133,6 +135,8 @@ public final class GlassTabBar {
     static final String REEL_FOOTERS = "clips_footer_mask_container";
     /** The Search tab, a child of the bar, which the liquid look puts in a circle of its own (#65). */
     static final String SEARCH_TAB = "search_tab";
+    /** The profile tab shows the account's picture, which the lens magnifies but does not recolour. */
+    static final String PROFILE_TAB = "profile_tab";
     /** The Reels tab, a child of the bar. With it selected a reel keeps the pill's slot while the bar hides (#347). */
     static final String REELS_TAB = "clips_tab";
     /**
@@ -1748,6 +1752,7 @@ public final class GlassTabBar {
             bar.setClipChildren(false);
             keep();
             bar.setBackground(pill);
+            pill.attachLayer();
             bar.addOnAttachStateChangeListener(this);
             if (bar.isAttachedToWindow()) bar.getViewTreeObserver().addOnPreDrawListener(this);
         }
@@ -2723,6 +2728,30 @@ public final class GlassTabBar {
             /** While a finger slides the liquid bubble it trails the finger a little: where it is, where the finger is, and when. */
             private float chaseLeft = Float.NaN, chaseGoal;
             private long chaseAt;
+            /**
+             * The liquid bubble is painted over the tabs, in the bar's overlay, so it can show them magnified: where
+             * the last frame put it, whether it should be drawn, and whether that has failed on this phone.
+             */
+            private final RectF layerRect = new RectF();
+            private final Path layerPath = new Path();
+            private final RectF layerBounds = new RectF();
+            private final Paint iconTint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private float layerCorner;
+            private int layerColor, iconTintColor;
+            private boolean layerOn, layerBroken, layerAdded;
+            private final Drawable layer = new Drawable() {
+                @Override public void draw(@NonNull Canvas canvas) {
+                    paintBubbleLayer(canvas);
+                }
+
+                @Override public void setAlpha(int alpha) { }
+
+                @Override public void setColorFilter(@Nullable android.graphics.ColorFilter colorFilter) { }
+
+                @Override public int getOpacity() {
+                    return android.graphics.PixelFormat.TRANSLUCENT;
+                }
+            };
             /** The size the liquid look's bubble is drawn at now, and at when the slide it is in began (#289). */
             private float bubbleNow = 1f, bubbleFrom = 1f;
             /** Whether the blurred backdrop was drawn into the pill this frame, which the bubble's lens needs. */
@@ -2768,6 +2797,7 @@ public final class GlassTabBar {
             }
 
             private void drawPill(@NonNull Canvas canvas) {
+                layerOn = false;
                 if (!pillBounds(rect)) return;
                 if (liquidNow()) {
                     drawLiquid(canvas);
@@ -2918,7 +2948,7 @@ public final class GlassTabBar {
                     fromRight = nowRight = toRight = toLeft + width;
                     slideStart = now - SPRING_MS;
                     tickedThisSlide = false;
-                    bubbleNow = bubbleFrom = 1f + BUBBLE_SWELL;
+                    bubbleNow = bubbleFrom = 1f + BUBBLE_HELD_SWELL;
                 } else if (Float.isNaN(fromLeft) || share < 1f) {
                     fromLeft = nowLeft = toLeft = targetLeft;
                     fromRight = nowRight = toRight = targetRight;
@@ -2972,10 +3002,13 @@ public final class GlassTabBar {
                     float extra = wider * density;
                     float lead = motion >= 0f ? BUBBLE_STRETCH_LEAD : 1f - BUBBLE_STRETCH_LEAD;
                     float squash = capsule.height() * (1f - squashKept(wider)) / 2f;
-                    capsule.set(capsule.left - extra * (1f - lead), capsule.top + squash,
-                            capsule.right + extra * lead, capsule.bottom - squash);
-                    capsule.left = Math.max(capsule.left, within.left);
-                    capsule.right = Math.min(capsule.right, within.right);
+                    float stretchedLeft = capsule.left - extra * (1f - lead);
+                    float stretchedRight = capsule.right + extra * lead;
+                    // The stretch doesn't carry an edge out past the end of what the bubble is in, but a bubble
+                    // that is already out of it, on its way to or from Search's circle, is left whole.
+                    if (capsule.left >= within.left && stretchedLeft < within.left) stretchedLeft = within.left;
+                    if (capsule.right <= within.right && stretchedRight > within.right) stretchedRight = within.right;
+                    capsule.set(stretchedLeft, capsule.top + squash, stretchedRight, capsule.bottom - squash);
                     corner = Math.min(corner, capsule.height() / 2f);
                 }
                 int color = highlight(base);
@@ -2986,10 +3019,19 @@ public final class GlassTabBar {
                     capsule.inset(-capsule.width() * swell, -capsule.height() * swell);
                     corner *= bubbleNow;
                 }
-                if (bubble) paintLens(canvas, corner);
-                fill.setColor(color);
-                if (share > 0f) canvas.drawRoundRect(capsule, corner, corner, fill);
-                if (bubble) paintBubble(canvas, corner, share);
+                if (bubble && share >= 1f && layerAdded && !layerBroken && canvas.isHardwareAccelerated()) {
+                    // Over the tabs, so the lens can show them bigger (#paintBubbleLayer).
+                    layerRect.set(capsule);
+                    layerCorner = corner;
+                    layerColor = color;
+                    layerOn = true;
+                    layer.setBounds(0, 0, bar.getWidth(), bar.getHeight());
+                } else {
+                    if (bubble) paintLens(canvas, corner);
+                    fill.setColor(color);
+                    if (share > 0f) canvas.drawRoundRect(capsule, corner, corner, fill);
+                    if (bubble) paintBubble(canvas, corner, share);
+                }
                 boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
                 if (stretching || chasing || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
             }
@@ -2998,8 +3040,8 @@ public final class GlassTabBar {
              * The lens under the bubble (#289): the blurred backdrop magnified a little, on Android 13 and newer and
              * only where the pill is blurred. The pill's tint goes back over it so the bubble reads as part of the pill.
              */
-            private void paintLens(Canvas canvas, float corner) {
-                if (!blurShown || !GlassLens.supported()) return;
+            private boolean paintLens(Canvas canvas, float corner) {
+                if (!blurShown || !GlassLens.supported()) return false;
                 GlassLens made = lens;
                 if (made == null) {
                     made = new GlassLens();
@@ -3008,7 +3050,85 @@ public final class GlassTabBar {
                 if (made.paint(canvas, node, nodeLeft, nodeTop, DOWNSAMPLE, bar.getWidth(), bar.getHeight(), capsule, corner)) {
                     fill.setColor(tint(base, true, opacityScale()));
                     canvas.drawRoundRect(capsule, corner, corner, fill);
+                    return true;
                 }
+                return false;
+            }
+
+            /** Puts the layer the bubble is painted in on the bar, over its tabs. */
+            private void attachLayer() {
+                if (layerAdded) return;
+                try {
+                    bar.getOverlay().add(layer);
+                    layerAdded = true;
+                } catch (Throwable failure) {
+                    layerBroken = true;
+                    diagnose("bubble layer not added", failure);
+                }
+            }
+
+            /**
+             * The liquid bubble over the tabs: the lens and its tint, which hide the tabs under it, then those
+             * tabs again a little bigger and in the accent colour, only where the bubble is, and then its light
+             * and rim. If anything about that fails the bubble goes back to being drawn under the tabs.
+             */
+            private void paintBubbleLayer(@NonNull Canvas canvas) {
+                if (!layerOn || layerBroken || bar.getBackground() != this) return;
+                try {
+                    capsule.set(layerRect);
+                    float corner = layerCorner;
+                    if (!paintLens(canvas, corner)) {
+                        fill.setColor(base | 0xff000000);
+                        canvas.drawRoundRect(capsule, corner, corner, fill);
+                    }
+                    fill.setColor(layerColor);
+                    canvas.drawRoundRect(capsule, corner, corner, fill);
+                    magnifyTabs(canvas, corner);
+                    paintBubble(canvas, corner, 1f);
+                } catch (Throwable failure) {
+                    layerBroken = true;
+                    layerOn = false;
+                    diagnose("bubble layer failed", failure);
+                    bar.invalidate();
+                }
+            }
+
+            /** Each tab the bubble covers, drawn [LENS_MAGNIFY] times bigger about the bubble's middle and clipped to it. */
+            private void magnifyTabs(@NonNull Canvas canvas, float corner) {
+                float middleX = capsule.centerX();
+                float middleY = capsule.centerY();
+                int accent = isDark(base) ? 0xff4c97ff : 0xff0a74ff;
+                if (iconTintColor != accent) {
+                    iconTint.setColorFilter(new PorterDuffColorFilter(accent, PorterDuff.Mode.SRC_IN));
+                    iconTintColor = accent;
+                }
+                int profile = id(bar.getContext(), PROFILE_TAB);
+                layerPath.rewind();
+                layerPath.addRoundRect(capsule, corner, corner, Path.Direction.CW);
+                int clipSave = canvas.save();
+                canvas.clipPath(layerPath);
+                float pad = dp(8);
+                for (int i = 0; i < bar.getChildCount(); i++) {
+                    View tab = bar.getChildAt(i);
+                    if (tab.getVisibility() != View.VISIBLE || tab.getWidth() <= 0 || tab.getHeight() <= 0) continue;
+                    float left = tab.getLeft() + tab.getTranslationX();
+                    float top = tab.getTop() + tab.getTranslationY();
+                    float bigLeft = middleX + LENS_MAGNIFY * (left - middleX);
+                    float bigRight = middleX + LENS_MAGNIFY * (left + tab.getWidth() - middleX);
+                    if (bigRight < capsule.left || bigLeft > capsule.right) continue;
+                    int saved = canvas.save();
+                    canvas.translate(middleX, middleY);
+                    canvas.scale(LENS_MAGNIFY, LENS_MAGNIFY);
+                    canvas.translate(-middleX, -middleY);
+                    canvas.translate(left, top);
+                    if (profile == 0 || tab.getId() != profile) {
+                        layerBounds.set(-pad, -pad, tab.getWidth() + pad, tab.getHeight() + pad);
+                        canvas.saveLayer(layerBounds, iconTint);
+                    }
+                    tab.draw(canvas);
+                    canvas.restoreToCount(saved);
+                }
+                canvas.restoreToCount(clipSave);
             }
 
             /**
@@ -3494,7 +3614,11 @@ public final class GlassTabBar {
     }
 
     /** How much larger the liquid look's bubble is while it moves between tabs, and under a finger (#289). */
-    static final float BUBBLE_SWELL = 0.08f;
+    static final float BUBBLE_SWELL = 0.14f;
+    /** How much bigger the bubble is while a finger holds it, like a lens lifted off the glass. */
+    static final float BUBBLE_HELD_SWELL = 0.28f;
+    /** How much the lens magnifies the tabs under it, which it also turns to the accent colour. */
+    static final float LENS_MAGNIFY = 1.22f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to

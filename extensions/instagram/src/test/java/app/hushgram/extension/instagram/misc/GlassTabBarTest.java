@@ -1984,7 +1984,7 @@ public class GlassTabBarTest {
         assertEquals("never under one pixel", 1f, GlassBlur.effectRadius(slider.minimum(), 0.1f, 0.25f), 0f);
     }
 
-    /** #289: the bubble swells to about 1.08 mid-slide, settles back to exactly 1, and a finger's size eases out. */
+    /** #289: the bubble swells a little mid-slide, settles back to exactly 1, and a finger's size eases out. */
     @Test
     public void theBubbleSwellsWhileItMovesAndSettlesAtOne() {
         assertEquals(1f, GlassTabBar.bubbleScale(0, 1f), 0f);
@@ -1995,7 +1995,7 @@ public class GlassTabBarTest {
         assertEquals("a released finger doesn't pop", 1.08f, GlassTabBar.bubbleScale(0, 1.08f), 0.001f);
         for (long t = 0; t < GlassTabBar.SLIDE_MS; t += 20) {
             float now = GlassTabBar.bubbleScale(t, 1.08f);
-            assertTrue("never above the swell", now <= 1.0801f);
+            assertTrue("never above the swell", now <= 1f + GlassTabBar.BUBBLE_SWELL + 0.0001f);
             assertTrue("never under 1", now >= 1f);
         }
     }
@@ -2037,7 +2037,7 @@ public class GlassTabBarTest {
                     try (Pixels pixels = host.background()) {
                         float now = ReflectionHelpers.getField(pill, "bubbleNow");
                         if (liquid) {
-                            assertEquals(where + ": swollen mid-slide", 1.08f, now, 0.01f);
+                            assertEquals(where + ": swollen mid-slide", 1f + GlassTabBar.BUBBLE_SWELL, now, 0.01f);
                             assertTrue(where + ": taller", capsule.height() > restHeight * 1.05f);
                             assertTrue(where + ": the rim and gradient were made", (int) ReflectionHelpers.getField(pill, "bubbleShade") != 0);
                             if (base == Color.BLACK) {
@@ -2076,10 +2076,10 @@ public class GlassTabBarTest {
             Object glass = host.glass();
             ReflectionHelpers.setField(glass, "dragX", host.bar.getWidth() / 2f);
             try (Pixels ignored = host.background()) { }
-            assertEquals(1.08f, (float) ReflectionHelpers.getField(pill, "bubbleNow"), 0.001f);
+            assertEquals(1f + GlassTabBar.BUBBLE_HELD_SWELL, (float) ReflectionHelpers.getField(pill, "bubbleNow"), 0.001f);
             ReflectionHelpers.setField(glass, "dragX", Float.NaN);
             try (Pixels ignored = host.background()) { }
-            assertEquals("the lift starts the slide at the held size", 1.08f, (float) ReflectionHelpers.getField(pill, "bubbleFrom"), 0.001f);
+            assertEquals("the lift starts the slide at the held size", 1f + GlassTabBar.BUBBLE_HELD_SWELL, (float) ReflectionHelpers.getField(pill, "bubbleFrom"), 0.001f);
             assertTrue((float) ReflectionHelpers.getField(pill, "bubbleNow") > 1.05f);
         }
     }
