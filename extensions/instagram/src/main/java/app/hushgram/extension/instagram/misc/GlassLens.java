@@ -128,8 +128,9 @@ public final class GlassLens {
         this.rimBend = bend;
     }
 
-    private float centreMagnify = CENTRE_MAGNIFY;
-    private float rimBend = RIM_BEND;
+    /** How much this lens magnifies at its middle and bends at its rim, which a caller may change between paints. */
+    float centreMagnify = CENTRE_MAGNIFY;
+    float rimBend = RIM_BEND;
 
     /** The bend's strength in percent: the one being dragged, else the slider's, else the standard for a bar with no bend switch on. */
     int percent() {

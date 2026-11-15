@@ -2731,7 +2731,7 @@ public final class GlassTabBar {
             private final RectF layerRect = new RectF();
             private final Path layerPath = new Path();
             private final RectF layerBounds = new RectF();
-            private float layerCorner;
+            private float layerCorner, layerEnergy;
             private int layerColor;
             /** The tabs as they are, recorded each frame, and the lens that bends them as glass would. */
             @Nullable private RenderNode iconsNode;
@@ -3022,6 +3022,9 @@ public final class GlassTabBar {
                     layerRect.set(capsule);
                     layerCorner = corner;
                     layerColor = color;
+                    // At rest the glass shows its tabs about as they are; held or moving, it bends them.
+                    float held = Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL));
+                    layerEnergy = Math.max(Math.min(1f, wider / LENS_MOVE_DP), held);
                     layerOn = true;
                     layer.setBounds(0, 0, bar.getWidth(), bar.getHeight());
                 } else {
@@ -3123,9 +3126,11 @@ public final class GlassTabBar {
                 }
                 GlassLens made = iconsLens;
                 if (made == null) {
-                    made = new GlassLens(LENS_ICON_MAGNIFY, LENS_ICON_BEND);
+                    made = new GlassLens(LENS_ICON_REST_MAGNIFY, LENS_ICON_REST_BEND);
                     iconsLens = made;
                 }
+                made.centreMagnify = LENS_ICON_REST_MAGNIFY + (LENS_ICON_MOVE_MAGNIFY - LENS_ICON_REST_MAGNIFY) * layerEnergy;
+                made.rimBend = LENS_ICON_REST_BEND + (LENS_ICON_MOVE_BEND - LENS_ICON_REST_BEND) * layerEnergy;
                 return made.paint(canvas, icons, 0f, 0f, 1f, width, height, capsule, corner);
             }
 
@@ -3646,8 +3651,12 @@ public final class GlassTabBar {
     static final float LENS_MAGNIFY = 1.22f;
     static final float LENS_FILL_SHARE = 0.45f;
     /** How much the lens magnifies the tabs at its middle and bends them at its rim, as {@link GlassLens} takes them. */
-    static final float LENS_ICON_MAGNIFY = 0.20f;
-    static final float LENS_ICON_BEND = 0.30f;
+    static final float LENS_ICON_REST_MAGNIFY = 0.07f;
+    static final float LENS_ICON_REST_BEND = 0.02f;
+    static final float LENS_ICON_MOVE_MAGNIFY = 0.18f;
+    static final float LENS_ICON_MOVE_BEND = 0.30f;
+    /** The stretch, in dp, at which the lens counts as fully on the move, and bends the tabs the most. */
+    static final float LENS_MOVE_DP = 12f;
 
     /**
      * The size of the liquid look's bubble [elapsed] ms into a slide that began at size [from]: it swells to
