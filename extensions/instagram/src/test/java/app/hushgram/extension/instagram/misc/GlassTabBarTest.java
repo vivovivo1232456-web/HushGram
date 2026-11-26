@@ -1282,6 +1282,47 @@ public class GlassTabBarTest {
         assertEquals("no room to move", 10f, GlassTabBar.followLeft(200f, 600f, 10f, 500f), 0f);
     }
 
+    /** A finger past the end of the bar pulls the glass like rubber: not at all while the capsule can follow, ever less the farther, never past the limit. */
+    @Test
+    public void aFingerPastTheEndPullsTheGlassLikeRubber() {
+        assertEquals(0f, GlassTabBar.rubberBand(0f, 20f), 0f);
+        assertEquals("no pull for a drag the other way", 0f, GlassTabBar.rubberBand(-30f, 20f), 0f);
+        assertEquals("no limit, no pull", 0f, GlassTabBar.rubberBand(30f, 0f), 0f);
+        float near = GlassTabBar.rubberBand(10f, 20f);
+        float far = GlassTabBar.rubberBand(100f, 20f);
+        assertTrue("it gives at first", near > 3f);
+        assertTrue("and more the farther", far > near);
+        assertTrue("but gives less each time", far - near < near * 4f);
+        assertTrue("never past the limit", GlassTabBar.rubberBand(100000f, 20f) < 20f);
+        // A capsule 100 wide that can go from 10 to 500: a finger at 60 holds it at the left end, centered, and 490 at the right.
+        assertEquals("on the capsule's reach", 0f, GlassTabBar.edgePull(300f, 100f, 10f, 500f, 20f, 2f), 0f);
+        assertEquals("at the end, not past it", 0f, GlassTabBar.edgePull(60f, 100f, 10f, 500f, 20f, 2f), 0f);
+        assertEquals("a hair past, within the dead zone", 0f, GlassTabBar.edgePull(59f, 100f, 10f, 500f, 20f, 2f), 0f);
+        assertTrue("past the left end pulls left", GlassTabBar.edgePull(20f, 100f, 10f, 500f, 20f, 2f) < 0f);
+        assertTrue("past the right end pulls right", GlassTabBar.edgePull(540f, 100f, 10f, 500f, 20f, 2f) > 0f);
+        assertEquals("the same either way", -GlassTabBar.edgePull(20f, 100f, 10f, 500f, 20f, 2f),
+                GlassTabBar.edgePull(490f, 100f, 10f, 500f, 20f, 2f), 0.0001f);
+        assertEquals("no room to move, no pull", 0f, GlassTabBar.edgePull(900f, 600f, 10f, 500f, 20f, 2f), 0f);
+        assertEquals("no limit, no pull", 0f, GlassTabBar.edgePull(900f, 100f, 10f, 500f, 0f, 2f), 0f);
+    }
+
+    /** The pull keeps a held capsule inside the bar: the room the pill leaves at its sides, less what the swell already takes. */
+    @Test
+    public void thePullStaysInsideTheRoomTheBarLeaves() {
+        float density = 2.75f;
+        float outer = 16f * density;
+        float inset = GlassTabBar.HIGHLIGHT_INSET_DP * density;
+        float width = 80f * density;
+        float limit = GlassTabBar.pullLimitPx(outer, inset, width, density);
+        assertTrue("it can give", limit >= 4f * density);
+        assertTrue("never more than the cap", limit <= GlassTabBar.EDGE_PULL_MAX_DP * density);
+        float swell = Math.max(0f, GlassTabBar.BUBBLE_HELD_SWELL / 2f * width - inset);
+        float reach = swell + limit * (GlassTabBar.EDGE_PULL_GLASS
+                + GlassTabBar.EDGE_PULL_CAPSULE * (1f + GlassTabBar.BUBBLE_HELD_SWELL / 2f));
+        assertTrue("the capsule ends inside the room", reach <= outer);
+        assertTrue("with more room it gives more", GlassTabBar.pullLimitPx(outer * 2f, inset, width, density) > limit);
+    }
+
     /** The liquid look's shapes (#65): Search's circle at the pill's end, and the pill shrinking to a circle at its start. */
     @Test
     public void theLiquidLookSplitsSearchOffAndShrinksThePillToACircle() {

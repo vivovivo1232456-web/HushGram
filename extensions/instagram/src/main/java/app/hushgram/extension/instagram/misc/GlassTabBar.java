@@ -2731,6 +2731,13 @@ public final class GlassTabBar {
             /** While a finger slides the liquid bubble it trails the finger a little: where it is, where the finger is, and when. */
             private float chaseLeft = Float.NaN, chaseGoal;
             private long chaseAt;
+            /** How far the glass is pulled toward a finger that is past an end of the bar, in px, and how fast it is going. */
+            private float pull, pullSpeed;
+            /** Which end the glass is pulled toward, 1 for the right and -1 for the left, or 0 when it isn't. */
+            private int pullSide;
+            private long pullAt;
+            /** The most the pull can reach now, in px, from which the capsule's squash is measured. */
+            private float pullLimit = 1f;
             /** When a finger took hold of the bubble, and how big it was then, so it swells up from there over the spring. */
             private long heldAt;
             private float heldFrom = 1f;
@@ -2809,6 +2816,59 @@ public final class GlassTabBar {
                 return true;
             }
 
+            /**
+             * Moves the pull on a spring toward [want], in px, signed: where a finger past an end of the bar has it,
+             * or 0 when none is. It lags the finger a little and, let go of, springs back past the bar's own shape
+             * and settles. Without the bubble there is no pull at all.
+             */
+            private void stepPull(long now, float want, boolean bubble) {
+                if (!bubble) {
+                    pull = 0f;
+                    pullSpeed = 0f;
+                    pullSide = 0;
+                    pullAt = 0;
+                    return;
+                }
+                int side = want > 0f ? 1 : want < 0f ? -1 : 0;
+                float goal = Math.abs(want);
+                if (pullSide == 0) {
+                    if (side == 0) {
+                        pullAt = 0;
+                        return;
+                    }
+                    pullSide = side;
+                    pull = 0f;
+                    pullSpeed = 0f;
+                } else if (side != pullSide) {
+                    // Let go of, or gone to the other end: back to none first, and across only once it is.
+                    goal = 0f;
+                    if (side != 0 && Math.abs(pull) < density * 0.5f) {
+                        pullSide = side;
+                        pull = 0f;
+                        pullSpeed = 0f;
+                        goal = Math.abs(want);
+                    }
+                }
+                long gap = pullAt == 0 ? 0L : Math.min(48L, Math.max(0L, now - pullAt));
+                pullAt = now;
+                float seconds = gap / 1000f;
+                int steps = Math.max(1, (int) Math.ceil(seconds / 0.004f));
+                float step = seconds / steps;
+                float swing = (float) (2d * Math.PI / EDGE_PULL_PERIOD_S);
+                float stiffness = swing * swing;
+                float damping = 2f * EDGE_PULL_DAMPING * swing;
+                for (int i = 0; i < steps; i++) {
+                    pullSpeed += (stiffness * (goal - pull) - damping * pullSpeed) * step;
+                    pull += pullSpeed * step;
+                }
+                if (goal == 0f && Math.abs(pull) < 0.25f && Math.abs(pullSpeed) < 4f) {
+                    pull = 0f;
+                    pullSpeed = 0f;
+                    pullSide = 0;
+                    pullAt = 0;
+                }
+            }
+
             private void drawPill(@NonNull Canvas canvas) {
                 layerOn = false;
                 if (!pillBounds(rect)) return;
@@ -2816,6 +2876,7 @@ public final class GlassTabBar {
                     drawLiquid(canvas);
                     return;
                 }
+                stepPull(0L, 0f, false);
                 float radius = cornerPx(corners, false, rect.height(), density);
                 boolean dark = isDark(base);
                 underlay(canvas);
@@ -2851,6 +2912,13 @@ public final class GlassTabBar {
                 shrunkHolder(holder, bar.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL, compact, shrunk);
                 float round = shrunk.height() / 2f;
                 underlay(canvas);
+                // Pulled by a finger past an end of the bar, the pill gives a little toward it, held at its far end.
+                int pulled = -1;
+                if (pullSide != 0 && Math.abs(pull) > 0.05f) {
+                    pulled = canvas.save();
+                    canvas.scale(1f + pull * EDGE_PULL_GLASS / Math.max(1f, rect.width()), 1f,
+                            pullSide > 0 ? rect.left : rect.right, 0f);
+                }
                 if (!dark) {
                     shadow(canvas, shrunk, round);
                     if (apart) shadow(canvas, circle, circle.height() / 2f);
@@ -2887,6 +2955,7 @@ public final class GlassTabBar {
                     outline.inset(half, half);
                     canvas.drawOval(outline, stroke);
                 }
+                if (pulled >= 0) canvas.restoreToCount(pulled);
             }
 
             /**
@@ -2942,6 +3011,7 @@ public final class GlassTabBar {
                 float targetLeft = Math.max(within.left + inset, selected.getLeft() + selected.getTranslationX() - grow);
                 float targetRight = Math.min(within.right - inset, selected.getRight() + selected.getTranslationX() + grow);
                 long now = AnimationUtils.currentAnimationTimeMillis();
+                float pullWant = 0f;
                 if (Float.isNaN(dragX)) {
                     chaseLeft = Float.NaN;
                     heldAt = 0;
@@ -2954,6 +3024,10 @@ public final class GlassTabBar {
                     // ticks for each tab it crosses. Once the finger lifts it slides from here to the tab.
                     float width = targetRight - targetLeft;
                     float goal = followLeft(dragX, width, rect.left + inset, rect.right - inset);
+                    // Past the end of what the capsule can reach the finger pulls on the glass, never past the room at the bar's sides.
+                    pullLimit = pullLimitPx(outer, inset, width, density);
+                    if (share >= 1f) pullWant = edgePull(dragX, width, rect.left + inset, rect.right - inset, pullLimit,
+                            density * EDGE_PULL_DEAD_DP);
                     if (!liquidNow() || Float.isNaN(chaseLeft) || now - chaseAt > 100) {
                         chaseLeft = goal;
                         chaseAt = now;
@@ -2983,6 +3057,7 @@ public final class GlassTabBar {
                     bubbleFrom = bubbleNow;
                 }
                 boolean bubble = liquidNow() && share > 0f;
+                stepPull(now, pullWant, bubble);
                 long elapsed = now - slideStart;
                 float progress = bubble ? springProgress(elapsed) : slideProgress(elapsed);
                 if (Float.isNaN(dragX)) bubbleNow = bubble ? bubbleScale(elapsed, bubbleFrom) : 1f;
@@ -3030,6 +3105,16 @@ public final class GlassTabBar {
                     capsule.set(stretchedLeft, capsule.top + squash, stretchedRight, capsule.bottom - squash);
                     corner = Math.min(corner, capsule.height() / 2f);
                 }
+                // Pulled by a finger past the end of the bar, the capsule reaches out toward it and thins a little.
+                if (bubble && pullSide != 0 && pull != 0f) {
+                    float reach = pull * EDGE_PULL_CAPSULE;
+                    if (pullSide > 0) capsule.right += reach;
+                    else capsule.left -= reach;
+                    float thinned = Math.max(0f, Math.min(1f, pull / pullLimit));
+                    float squash = capsule.height() * EDGE_PULL_SQUASH * thinned / 2f;
+                    capsule.set(capsule.left, capsule.top + squash, capsule.right, capsule.bottom - squash);
+                    corner = Math.min(corner, capsule.height() / 2f);
+                }
                 int color = highlight(base);
                 if (share < 1f) color = (color & 0x00ffffff) | (scaledAlpha(Color.alpha(color), Math.max(0f, share)) << 24);
                 fill.setColor(color);
@@ -3037,6 +3122,12 @@ public final class GlassTabBar {
                     float swell = (bubbleNow - 1f) / 2f;
                     capsule.inset(-capsule.width() * swell, -capsule.height() * swell);
                     corner *= bubbleNow;
+                }
+                // Whatever pulled and swelled it, a pulled capsule stops a few dp short of the bar's own edge.
+                if (bubble && pullSide != 0) {
+                    float edge = density * EDGE_PULL_MARGIN_DP;
+                    if (capsule.right > bar.getWidth() - edge) capsule.right = Math.max(capsule.left + 1f, bar.getWidth() - edge);
+                    if (capsule.left < edge) capsule.left = Math.min(capsule.right - 1f, edge);
                 }
                 // How much the capsule has let go of its flat fill: held by a finger, or on the move, or stretched.
                 float held = bubble ? Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL)) : 0f;
@@ -3087,7 +3178,7 @@ public final class GlassTabBar {
                 }
                 boolean chasing = bubble && !Float.isNaN(chaseLeft) && Math.abs(chaseGoal - chaseLeft) > 0.5f;
                 boolean swelling = bubble && heldAt != 0 && now - heldAt < SPRING_MS;
-                if (stretching || chasing || swelling || layerOn || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
+                if (stretching || chasing || swelling || layerOn || (bubble && pullSide != 0) || elapsed < (bubble ? SPRING_MS : SLIDE_MS)) invalidateSelf();
             }
 
             /**
@@ -3901,6 +3992,70 @@ public final class GlassTabBar {
     static final float BUBBLE_SQUASH_MAX = 0.08f;
     /** The share of the stretch that goes on the edge the bubble leads with; the rest trails behind. */
     static final float BUBBLE_STRETCH_LEAD = 0.65f;
+
+    /**
+     * A finger that slides the capsule past either end of the bar pulls on the glass as it does on iOS 26: the
+     * capsule stretches out toward the finger and the pill itself gives a little after it, like jelly held at one
+     * end, harder to pull the farther it goes. Let go, it springs back, a touch past, and settles. The most the
+     * pull can reach, in dp, is this, and never more than the room the bar leaves at its sides.
+     */
+    static final float EDGE_PULL_MAX_DP = 22f;
+    /** How hard the glass is to pull: at 0.55 a drag as long as the limit pulls it just over a third of the way there. */
+    static final float EDGE_PULL_RUBBER = 0.55f;
+    /** The share of the pull the pill itself stretches by, toward the finger. */
+    static final float EDGE_PULL_GLASS = 0.4f;
+    /** The share of the pull the capsule's leading edge reaches out by, past where the pill's stretch takes it. */
+    static final float EDGE_PULL_CAPSULE = 1f;
+    /** How far short of the bar's own edge, in dp, a pulled capsule stops. */
+    static final float EDGE_PULL_MARGIN_DP = 3f;
+    /** The share of its height the capsule gives up at the full pull. */
+    static final float EDGE_PULL_SQUASH = 0.10f;
+    /** The pull's spring: how long one swing takes, in seconds, and how much of the swing is damped (0.45 goes a fifth past). */
+    static final float EDGE_PULL_PERIOD_S = 0.26f;
+    static final float EDGE_PULL_DAMPING = 0.45f;
+    /** How far past the end, in dp, a finger can be before it pulls: a finger on the last tab doesn't. */
+    static final float EDGE_PULL_DEAD_DP = 2f;
+
+    /**
+     * How far the glass is pulled, in the same units as [overdrag] and [limit], by a finger [overdrag] past where
+     * the capsule can go: the iOS rubber band, which gives at first almost as far as the finger goes and then
+     * ever less, and never passes [limit].
+     */
+    static float rubberBand(float overdrag, float limit) {
+        float distance = Math.max(0f, overdrag);
+        if (limit <= 0f) return 0f;
+        return limit * (1f - 1f / (1f + EDGE_PULL_RUBBER * distance / limit));
+    }
+
+    /**
+     * How far a finger at [finger] pulls the glass when it slides a capsule [width] wide that can only go between
+     * [min] and [max], in px, never more than [limit]: negative toward the left end, positive toward the right,
+     * and 0 while the capsule can follow the finger, or when it has no room to move at all, and within [dead] of
+     * the end.
+     */
+    static float edgePull(float finger, float width, float min, float max, float limit, float dead) {
+        if (limit <= 0f || max - min <= width) return 0f;
+        float left = finger - width / 2f;
+        float over = left < min ? left - min : Math.max(0f, left + width - max);
+        float distance = Math.abs(over) - dead;
+        if (distance <= 0f) return 0f;
+        float pulled = rubberBand(distance, limit);
+        return over < 0f ? -pulled : pulled;
+    }
+
+    /**
+     * The most, in px, the glass can be pulled for a capsule [width] wide that is held by a finger (so swollen by
+     * {@link #BUBBLE_HELD_SWELL}) to still stop {@link #EDGE_PULL_MARGIN_DP} short of the bar's edge, when the
+     * pill is kept [outer] clear of it and the capsule sits [inset] inside the pill. At most
+     * {@link #EDGE_PULL_MAX_DP}, and at least a little, so a tight bar still gives.
+     */
+    static float pullLimitPx(float outer, float inset, float width, float density) {
+        float room = outer - density * EDGE_PULL_MARGIN_DP;
+        float used = Math.max(0f, BUBBLE_HELD_SWELL / 2f * width - inset);
+        float limit = (room - used) / (EDGE_PULL_GLASS + EDGE_PULL_CAPSULE * (1f + BUBBLE_HELD_SWELL / 2f));
+        return Math.max(density * 4f, Math.min(density * EDGE_PULL_MAX_DP, limit));
+    }
+
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
     static final float BUBBLE_MOTION_MS = 40f;
     static final float BUBBLE_CHASE_MS = 70f;
