@@ -1306,21 +1306,51 @@ public class GlassTabBarTest {
         assertEquals("no limit, no pull", 0f, GlassTabBar.edgePull(900f, 100f, 10f, 500f, 0f, 2f), 0f);
     }
 
-    /** The pull keeps a held capsule inside the bar: the room the pill leaves at its sides, less what the swell already takes. */
+    /** The glass leans toward a finger along the bar, softly held, and what is drawn maps back to where it was on the pill. */
+    @Test
+    public void theGlassLeansTowardTheFingerAndMapsBack() {
+        float limit = 8f * 2.75f;
+        assertEquals("a finger in the middle leans it not at all", 0f, GlassTabBar.leanGoal(0f, GlassTabBar.LEAN_GAIN, limit), 0f);
+        float right = GlassTabBar.leanGoal(200f, GlassTabBar.LEAN_GAIN, limit);
+        assertTrue("toward the right for a finger on the right", right > 0f);
+        assertEquals("and the same toward the left", -right, GlassTabBar.leanGoal(-200f, GlassTabBar.LEAN_GAIN, limit), 0.0001f);
+        assertTrue("more the farther the finger", GlassTabBar.leanGoal(400f, GlassTabBar.LEAN_GAIN, limit) > right);
+        assertTrue("never past the limit", GlassTabBar.leanGoal(100000f, GlassTabBar.LEAN_GAIN, limit) <= limit);
+        assertEquals("no room, no lean", 0f, GlassTabBar.leanGoal(200f, GlassTabBar.LEAN_GAIN, 0f), 0f);
+        assertEquals("a bar with room leans by the most", 8f * 2.75f, GlassTabBar.leanLimitPx(20f * 2.75f, 2.75f), 0.0001f);
+        assertTrue("a tight one by less", GlassTabBar.leanLimitPx(8f * 2.75f, 2.75f) < 8f * 2.75f);
+        // A pill from 50 to 950: leaning right moves its right end by all the lean and its left end by the least.
+        float lean = 20f;
+        assertEquals(950f + GlassTabBar.LEAN_NEAR * lean, GlassTabBar.leanedX(950f, lean, 50f, 950f), 0.0001f);
+        assertEquals(50f + GlassTabBar.LEAN_FAR * lean, GlassTabBar.leanedX(50f, lean, 50f, 950f), 0.0001f);
+        assertEquals(50f - GlassTabBar.LEAN_NEAR * lean, GlassTabBar.leanedX(50f, -lean, 50f, 950f), 0.0001f);
+        assertEquals(950f - GlassTabBar.LEAN_FAR * lean, GlassTabBar.leanedX(950f, -lean, 50f, 950f), 0.0001f);
+        assertEquals("no lean, no move", 500f, GlassTabBar.leanedX(500f, 0f, 50f, 950f), 0f);
+        for (float leaning : new float[] {-22f, -5f, 5f, 22f}) {
+            for (float x : new float[] {0f, 50f, 400f, 950f, 1000f}) {
+                assertEquals("drawn and back", x, GlassTabBar.unleanedX(GlassTabBar.leanedX(x, leaning, 50f, 950f), leaning, 50f, 950f), 0.001f);
+            }
+        }
+    }
+
+    /** The pull keeps a held capsule inside the bar: the room the pill leaves at its sides, less the swell and the glass's lean. */
     @Test
     public void thePullStaysInsideTheRoomTheBarLeaves() {
         float density = 2.75f;
-        float outer = 16f * density;
+        float outer = 18f * density;
         float inset = GlassTabBar.HIGHLIGHT_INSET_DP * density;
         float width = 80f * density;
-        float limit = GlassTabBar.pullLimitPx(outer, inset, width, density);
-        assertTrue("it can give", limit >= 4f * density);
+        float lean = GlassTabBar.leanLimitPx(outer, density);
+        float limit = GlassTabBar.pullLimitPx(outer, inset, width, density, lean);
+        assertTrue("it can give", limit >= 1.5f * density);
         assertTrue("never more than the cap", limit <= GlassTabBar.EDGE_PULL_MAX_DP * density);
         float swell = Math.max(0f, GlassTabBar.BUBBLE_HELD_SWELL / 2f * width - inset);
-        float reach = swell + limit * (GlassTabBar.EDGE_PULL_GLASS
-                + GlassTabBar.EDGE_PULL_CAPSULE * (1f + GlassTabBar.BUBBLE_HELD_SWELL / 2f));
-        assertTrue("the capsule ends inside the room", reach <= outer);
-        assertTrue("with more room it gives more", GlassTabBar.pullLimitPx(outer * 2f, inset, width, density) > limit);
+        float reach = swell + lean * GlassTabBar.LEAN_NEAR
+                + limit * GlassTabBar.EDGE_PULL_CAPSULE * (1f + GlassTabBar.BUBBLE_HELD_SWELL / 2f);
+        assertTrue("the capsule ends inside the room", reach <= outer - GlassTabBar.EDGE_PULL_MARGIN_DP * density + 0.01f);
+        assertTrue("with more room it gives more", GlassTabBar.pullLimitPx(outer * 2f, inset, width, density, lean) > limit);
+        assertTrue("the more the glass leans, the less the capsule reaches",
+                GlassTabBar.pullLimitPx(outer, inset, width, density, 0f) > limit);
     }
 
     /** The liquid look's shapes (#65): Search's circle at the pill's end, and the pill shrinking to a circle at its start. */

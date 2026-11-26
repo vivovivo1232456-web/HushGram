@@ -2738,6 +2738,13 @@ public final class GlassTabBar {
             private long pullAt;
             /** The most the pull can reach now, in px, from which the capsule's squash is measured. */
             private float pullLimit = 1f;
+            /**
+             * How far the glass leans toward a finger sliding along the bar, in px (positive to the right), how fast it
+             * is going, when it was last moved, whether it still is, and the most it leans now.
+             */
+            private float lean, leanSpeed, leanLimit = 1f;
+            private long leanAt;
+            private boolean leanMoving;
             /** When a finger took hold of the bubble, and how big it was then, so it swells up from there over the spring. */
             private long heldAt;
             private float heldFrom = 1f;
@@ -2869,6 +2876,47 @@ public final class GlassTabBar {
                 }
             }
 
+            /**
+             * Moves the glass's lean on a spring toward where a finger sliding along the bar has it, or toward none
+             * when no finger does: it follows the finger loosely and, let go of, snaps back past where the pill is and
+             * rings a little before it settles. [active] is false where there's no bubble to lean with.
+             */
+            private void stepLean(long now, boolean active) {
+                boolean held = !Float.isNaN(dragX);
+                float want = 0f;
+                if (active && held) {
+                    leanLimit = leanLimitPx(outer, density);
+                    want = leanGoal(dragX - rect.centerX(), LEAN_GAIN, leanLimit);
+                }
+                if (!active) {
+                    lean = 0f;
+                    leanSpeed = 0f;
+                }
+                if (want == 0f && lean == 0f && leanSpeed == 0f) {
+                    leanAt = 0;
+                    leanMoving = false;
+                    return;
+                }
+                long gap = leanAt == 0 ? 0L : Math.min(48L, Math.max(0L, now - leanAt));
+                leanAt = now;
+                float seconds = gap / 1000f;
+                int steps = Math.max(1, (int) Math.ceil(seconds / 0.004f));
+                float step = seconds / steps;
+                float swing = (float) (2d * Math.PI / LEAN_PERIOD_S);
+                float stiffness = swing * swing;
+                float damping = 2f * (held ? LEAN_DAMPING_HELD : LEAN_DAMPING_FREE) * swing;
+                for (int i = 0; i < steps; i++) {
+                    leanSpeed += (stiffness * (want - lean) - damping * leanSpeed) * step;
+                    lean += leanSpeed * step;
+                }
+                if (want == 0f && Math.abs(lean) < 0.25f && Math.abs(leanSpeed) < 4f) {
+                    lean = 0f;
+                    leanSpeed = 0f;
+                    leanAt = 0;
+                }
+                leanMoving = Math.abs(lean - want) > 0.1f || Math.abs(leanSpeed) > 2f;
+            }
+
             private void drawPill(@NonNull Canvas canvas) {
                 layerOn = false;
                 if (!pillBounds(rect)) return;
@@ -2877,6 +2925,7 @@ public final class GlassTabBar {
                     return;
                 }
                 stepPull(0L, 0f, false);
+                stepLean(0L, false);
                 float radius = cornerPx(corners, false, rect.height(), density);
                 boolean dark = isDark(base);
                 underlay(canvas);
@@ -2912,12 +2961,17 @@ public final class GlassTabBar {
                 shrunkHolder(holder, bar.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL, compact, shrunk);
                 float round = shrunk.height() / 2f;
                 underlay(canvas);
-                // Pulled by a finger past an end of the bar, the pill gives a little toward it, held at its far end.
-                int pulled = -1;
-                if (pullSide != 0 && Math.abs(pull) > 0.05f) {
-                    pulled = canvas.save();
-                    canvas.scale(1f + pull * EDGE_PULL_GLASS / Math.max(1f, rect.width()), 1f,
-                            pullSide > 0 ? rect.left : rect.right, 0f);
+                // A finger sliding along the bar pulls the glass toward it: the pill leans that way, its end by the
+                // finger moving most and the other end least, so it is stretched as well as moved.
+                stepLean(AnimationUtils.currentAnimationTimeMillis(), compact <= 0f);
+                int leaned = -1;
+                if (Math.abs(lean) > 0.05f) {
+                    float dir = lean > 0f ? 1f : -1f;
+                    float travel = Math.abs(lean);
+                    leaned = canvas.save();
+                    canvas.translate(dir * LEAN_FAR * travel, 0f);
+                    canvas.scale(1f + (LEAN_NEAR - LEAN_FAR) * travel / Math.max(1f, rect.width()), 1f,
+                            dir > 0f ? rect.left : rect.right, 0f);
                 }
                 if (!dark) {
                     shadow(canvas, shrunk, round);
@@ -2955,7 +3009,8 @@ public final class GlassTabBar {
                     outline.inset(half, half);
                     canvas.drawOval(outline, stroke);
                 }
-                if (pulled >= 0) canvas.restoreToCount(pulled);
+                if (leaned >= 0) canvas.restoreToCount(leaned);
+                if (leanMoving) invalidateSelf();
             }
 
             /**
@@ -3023,10 +3078,12 @@ public final class GlassTabBar {
                     // A finger slides it (#136): it sits on the finger, as wide as the selected tab's, and
                     // ticks for each tab it crosses. Once the finger lifts it slides from here to the tab.
                     float width = targetRight - targetLeft;
-                    float goal = followLeft(dragX, width, rect.left + inset, rect.right - inset);
-                    // Past the end of what the capsule can reach the finger pulls on the glass, never past the room at the bar's sides.
-                    pullLimit = pullLimitPx(outer, inset, width, density);
-                    if (share >= 1f) pullWant = edgePull(dragX, width, rect.left + inset, rect.right - inset, pullLimit,
+                    // The glass leans, so where the finger is on the pill is not where it is on the screen.
+                    float finger = unleanedX(dragX, lean, rect.left, rect.right);
+                    float goal = followLeft(finger, width, rect.left + inset, rect.right - inset);
+                    // Past the end of what the capsule can reach the finger pulls on it, never past the room at the bar's sides.
+                    pullLimit = pullLimitPx(outer, inset, width, density, lean);
+                    if (share >= 1f) pullWant = edgePull(finger, width, rect.left + inset, rect.right - inset, pullLimit,
                             density * EDGE_PULL_DEAD_DP);
                     if (!liquidNow() || Float.isNaN(chaseLeft) || now - chaseAt > 100) {
                         chaseLeft = goal;
@@ -3071,7 +3128,8 @@ public final class GlassTabBar {
                 } else {
                     capsule.set(nowLeft, within.top + inset, nowRight, within.bottom - inset);
                 }
-                tick((nowLeft + nowRight) / 2f);
+                // The tabs stay where they are as the glass leans, so the tab the bubble is over is by where it is drawn.
+                tick(leanedX((nowLeft + nowRight) / 2f, lean, rect.left, rect.right));
                 // The bubble stretches along its way and gives up a little height, as a drop of liquid does
                 // when it's pulled: the faster it is really moving, whether a finger drags it or the spring
                 // carries it, the more, and more at the edge it leads with. At rest it's as it was.
@@ -3123,11 +3181,13 @@ public final class GlassTabBar {
                     capsule.inset(-capsule.width() * swell, -capsule.height() * swell);
                     corner *= bubbleNow;
                 }
-                // Whatever pulled and swelled it, a pulled capsule stops a few dp short of the bar's own edge.
-                if (bubble && pullSide != 0) {
+                // Whatever pulled, swelled and leaned it, the capsule stops a few dp short of the bar's own edge, as drawn.
+                if (bubble && (pullSide != 0 || lean != 0f)) {
                     float edge = density * EDGE_PULL_MARGIN_DP;
-                    if (capsule.right > bar.getWidth() - edge) capsule.right = Math.max(capsule.left + 1f, bar.getWidth() - edge);
-                    if (capsule.left < edge) capsule.left = Math.min(capsule.right - 1f, edge);
+                    float farRight = unleanedX(bar.getWidth() - edge, lean, rect.left, rect.right);
+                    float farLeft = unleanedX(edge, lean, rect.left, rect.right);
+                    if (capsule.right > farRight) capsule.right = Math.max(capsule.left + 1f, farRight);
+                    if (capsule.left < farLeft) capsule.left = Math.min(capsule.right - 1f, farLeft);
                 }
                 // How much the capsule has let go of its flat fill: held by a finger, or on the move, or stretched.
                 float held = bubble ? Math.max(0f, Math.min(1f, (bubbleNow - 1f) / BUBBLE_HELD_SWELL)) : 0f;
@@ -3994,20 +4054,36 @@ public final class GlassTabBar {
     static final float BUBBLE_STRETCH_LEAD = 0.65f;
 
     /**
-     * A finger that slides the capsule past either end of the bar pulls on the glass as it does on iOS 26: the
-     * capsule stretches out toward the finger and the pill itself gives a little after it, like jelly held at one
-     * end, harder to pull the farther it goes. Let go, it springs back, a touch past, and settles. The most the
-     * pull can reach, in dp, is this, and never more than the room the bar leaves at its sides.
+     * The glass is elastic, as the whole menu is under a finger on ColorOS and as iOS 26's is: a finger that
+     * slides along the bar pulls the pill toward it, a little the nearer the finger is to an end of the bar, on
+     * a spring that follows it loosely and, let go of, snaps back past where the pill is and rings a little before
+     * it settles. The most it leans, in dp, is this, and never more than the room the bar leaves at its sides.
+     */
+    static final float LEAN_MAX_DP = 8f;
+    /** How much of the finger's distance from the pill's middle the glass leans by, before it is held to the most. */
+    static final float LEAN_GAIN = 0.06f;
+    /** The share of the lean the pill's end toward the finger moves by, and the end away from it: the rest stretches it. */
+    static final float LEAN_NEAR = 1f;
+    static final float LEAN_FAR = 0.3f;
+    /** The lean's spring: how long one swing takes, in seconds, and how much of the swing a finger holding on damps. */
+    static final float LEAN_PERIOD_S = 0.30f;
+    static final float LEAN_DAMPING_HELD = 0.5f;
+    /** How much of it is damped once the finger lets go: less, so the glass snaps back and rings (0.28 goes over by a third). */
+    static final float LEAN_DAMPING_FREE = 0.28f;
+
+    /**
+     * A finger that slides the capsule past either end of the bar also pulls on the capsule itself, as it does
+     * on iOS 26: the capsule stretches out toward the finger, harder to pull the farther it goes. Let go, it
+     * springs back, a touch past, and settles. The most it reaches, in dp, is this, and never more than the
+     * room the bar leaves at its sides once the pill's own lean is taken out of it.
      */
     static final float EDGE_PULL_MAX_DP = 22f;
-    /** How hard the glass is to pull: at 0.55 a drag as long as the limit pulls it just over a third of the way there. */
+    /** How hard the capsule is to pull: at 0.55 a drag as long as the limit pulls it just over a third of the way there. */
     static final float EDGE_PULL_RUBBER = 0.55f;
-    /** The share of the pull the pill itself stretches by, toward the finger. */
-    static final float EDGE_PULL_GLASS = 0.4f;
-    /** The share of the pull the capsule's leading edge reaches out by, past where the pill's stretch takes it. */
+    /** The share of the pull the capsule's leading edge reaches out by. */
     static final float EDGE_PULL_CAPSULE = 1f;
     /** How far short of the bar's own edge, in dp, a pulled capsule stops. */
-    static final float EDGE_PULL_MARGIN_DP = 3f;
+    static final float EDGE_PULL_MARGIN_DP = 2f;
     /** The share of its height the capsule gives up at the full pull. */
     static final float EDGE_PULL_SQUASH = 0.10f;
     /** The pull's spring: how long one swing takes, in seconds, and how much of the swing is damped (0.45 goes a fifth past). */
@@ -4017,7 +4093,46 @@ public final class GlassTabBar {
     static final float EDGE_PULL_DEAD_DP = 2f;
 
     /**
-     * How far the glass is pulled, in the same units as [overdrag] and [limit], by a finger [overdrag] past where
+     * How far the glass leans, in px, for a finger [offset] px from the pill's middle (positive to the right):
+     * [gain] of the offset, held softly to [limit], so it leans the same way a finger goes, more the nearer an
+     * end, and never past [limit].
+     */
+    static float leanGoal(float offset, float gain, float limit) {
+        if (limit <= 0f) return 0f;
+        return limit * (float) Math.tanh(gain * offset / limit);
+    }
+
+    /** The most the glass leans, in px, in a bar whose pill is kept [outer] px clear of its sides: half the room there. */
+    static float leanLimitPx(float outer, float density) {
+        return Math.max(0f, Math.min(density * LEAN_MAX_DP, (outer - density * EDGE_PULL_MARGIN_DP) * 0.5f));
+    }
+
+    /**
+     * Where [x] on the pill, which runs from [left] to [right], is drawn when the glass leans [lean] px, positive
+     * toward the right: the end the finger is on moves by all of it, the other end by {@link #LEAN_FAR} of it,
+     * and the pill between is stretched.
+     */
+    static float leanedX(float x, float lean, float left, float right) {
+        if (lean == 0f || right <= left) return x;
+        float dir = lean > 0f ? 1f : -1f;
+        float pull = Math.abs(lean);
+        float far = dir > 0f ? left : right;
+        float scale = 1f + (LEAN_NEAR - LEAN_FAR) * pull / (right - left);
+        return far + (x - far) * scale + dir * LEAN_FAR * pull;
+    }
+
+    /** Where on the pill, un-leaned, the drawn [x] is: {@link #leanedX} the other way. */
+    static float unleanedX(float x, float lean, float left, float right) {
+        if (lean == 0f || right <= left) return x;
+        float dir = lean > 0f ? 1f : -1f;
+        float pull = Math.abs(lean);
+        float far = dir > 0f ? left : right;
+        float scale = 1f + (LEAN_NEAR - LEAN_FAR) * pull / (right - left);
+        return far + (x - far - dir * LEAN_FAR * pull) / scale;
+    }
+
+    /**
+     * How far the capsule is pulled, in the same units as [overdrag] and [limit], by a finger [overdrag] past where
      * the capsule can go: the iOS rubber band, which gives at first almost as far as the finger goes and then
      * ever less, and never passes [limit].
      */
@@ -4028,7 +4143,7 @@ public final class GlassTabBar {
     }
 
     /**
-     * How far a finger at [finger] pulls the glass when it slides a capsule [width] wide that can only go between
+     * How far a finger at [finger] pulls the capsule when it slides one [width] wide that can only go between
      * [min] and [max], in px, never more than [limit]: negative toward the left end, positive toward the right,
      * and 0 while the capsule can follow the finger, or when it has no room to move at all, and within [dead] of
      * the end.
@@ -4044,16 +4159,16 @@ public final class GlassTabBar {
     }
 
     /**
-     * The most, in px, the glass can be pulled for a capsule [width] wide that is held by a finger (so swollen by
-     * {@link #BUBBLE_HELD_SWELL}) to still stop {@link #EDGE_PULL_MARGIN_DP} short of the bar's edge, when the
-     * pill is kept [outer] clear of it and the capsule sits [inset] inside the pill. At most
-     * {@link #EDGE_PULL_MAX_DP}, and at least a little, so a tight bar still gives.
+     * The most, in px, the capsule can be pulled for one [width] wide that is held by a finger (so swollen by
+     * {@link #BUBBLE_HELD_SWELL}) to still stop {@link #EDGE_PULL_MARGIN_DP} short of the bar's edge, when the pill
+     * is kept [outer] clear of it, the capsule sits [inset] inside the pill, and the glass leans [lean] px
+     * already. At most {@link #EDGE_PULL_MAX_DP}, and at least a little, so a tight bar still gives.
      */
-    static float pullLimitPx(float outer, float inset, float width, float density) {
-        float room = outer - density * EDGE_PULL_MARGIN_DP;
+    static float pullLimitPx(float outer, float inset, float width, float density, float lean) {
+        float room = outer - density * EDGE_PULL_MARGIN_DP - Math.abs(lean) * LEAN_NEAR;
         float used = Math.max(0f, BUBBLE_HELD_SWELL / 2f * width - inset);
-        float limit = (room - used) / (EDGE_PULL_GLASS + EDGE_PULL_CAPSULE * (1f + BUBBLE_HELD_SWELL / 2f));
-        return Math.max(density * 4f, Math.min(density * EDGE_PULL_MAX_DP, limit));
+        float limit = (room - used) / (EDGE_PULL_CAPSULE * (1f + BUBBLE_HELD_SWELL / 2f));
+        return Math.max(density * 1.5f, Math.min(density * EDGE_PULL_MAX_DP, limit));
     }
 
     /** How long, in ms, the bubble's speed is averaged over, and how long it takes to catch up with a finger. */
